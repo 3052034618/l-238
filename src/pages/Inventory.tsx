@@ -37,6 +37,11 @@ const Inventory: React.FC = () => {
   const rawMaterials = useAppStore((state) => state.rawMaterials)
   const agingWarehouses = useAppStore((state) => state.agingWarehouses)
   const spareParts = useAppStore((state) => state.spareParts)
+  const stockIn = useAppStore((state) => state.stockIn)
+  const stockOut = useAppStore((state) => state.stockOut)
+  const getRawMaterial = useAppStore((state) => state.getRawMaterial)
+  const getSparePart = useAppStore((state) => state.getSparePart)
+  const getAgingWarehouse = useAppStore((state) => state.getAgingWarehouse)
 
   const [isModalVisible, setIsModalVisible] = useState(false)
   const [modalType, setModalType] = useState<'in' | 'out'>('in')
@@ -82,8 +87,41 @@ const Inventory: React.FC = () => {
   }
 
   const handleSubmit = () => {
-    form.validateFields().then(() => {
-      message.success(modalType === 'in' ? '入库成功' : '出库成功')
+    form.validateFields().then((values) => {
+      const { materialId, quantity, batchNo } = values
+      const type = activeTab === 'raw' ? 'raw' : activeTab === 'spare' ? 'spare' : 'aging'
+      
+      if (modalType === 'out') {
+        if (type === 'raw') {
+          const material = getRawMaterial(materialId)
+          if (material && quantity > material.quantity) {
+            message.error(`出库失败！${material.name} 库存不足，当前库存: ${material.quantity.toLocaleString()} ${material.unit}`)
+            return
+          }
+        } else if (type === 'spare') {
+          const part = getSparePart(materialId)
+          if (part && quantity > part.quantity) {
+            message.error(`出库失败！${part.name} 库存不足，当前库存: ${part.quantity} ${part.unit}`)
+            return
+          }
+        } else if (type === 'aging') {
+          const warehouse = getAgingWarehouse(materialId)
+          if (warehouse && quantity > warehouse.usedCapacity) {
+            message.error(`出库失败！${warehouse.name} 当前存量: ${(warehouse.usedCapacity / 1000).toFixed(0)}k L`)
+            return
+          }
+        }
+        const success = stockOut(type, materialId, quantity, batchNo)
+        if (success) {
+          message.success('出库成功')
+        } else {
+          message.error('出库失败，库存不足')
+          return
+        }
+      } else {
+        stockIn(type, materialId, quantity, batchNo)
+        message.success('入库成功')
+      }
       setIsModalVisible(false)
       form.resetFields()
     })

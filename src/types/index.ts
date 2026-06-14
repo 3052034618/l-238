@@ -13,6 +13,8 @@ export interface Fermenter {
   expectedEndTime?: string
   position: { row: number; col: number }
   runHours: number
+  coolingAction?: 'cooling' | 'heating' | 'humidifying' | 'dehumidifying'
+  coolingActionTime?: string
 }
 
 export interface Distiller {
@@ -80,6 +82,18 @@ export interface Schedule {
   approveTime?: string
   applyTime?: string
   adjustReason?: string
+  originalSchedule?: {
+    fermenterId: string
+    fermenterName: string
+    distillerId?: string
+    distillerName?: string
+    startTime: string
+    endTime: string
+    shift: 'morning' | 'afternoon' | 'night'
+    status: 'pending' | 'approved' | 'rejected' | 'adjusting' | 'executing' | 'completed'
+  }
+  adjustRejected?: boolean
+  adjustRejectRemark?: string
 }
 
 export interface AlarmRecord {

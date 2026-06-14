@@ -37,6 +37,7 @@ const QualityControl: React.FC = () => {
   const qualityTests = useAppStore((state) => state.qualityTests)
   const recipes = useAppStore((state) => state.recipes)
   const addQualityTest = useAppStore((state) => state.addQualityTest)
+  const updateQualityTest = useAppStore((state) => state.updateQualityTest)
   const batchRecords = useAppStore((state) => state.batchRecords)
   const currentUser = useAppStore((state) => state.currentUser)
 
@@ -97,6 +98,12 @@ const QualityControl: React.FC = () => {
       title: '申请复检',
       content: `确定对批次 ${test.batchNo} 申请复检吗？`,
       onOk: () => {
+        updateQualityTest(test.id, {
+          overallResult: 'recheck',
+        })
+        if (currentTest?.id === test.id) {
+          setCurrentTest({ ...test, overallResult: 'recheck' })
+        }
         message.success('复检申请已提交')
       },
     })
@@ -109,8 +116,12 @@ const QualityControl: React.FC = () => {
       okText: '确认降级',
       okType: 'danger',
       onOk: () => {
-        const updatedTest = { ...test, overallResult: 'degraded' as const }
-        setCurrentTest(updatedTest)
+        updateQualityTest(test.id, {
+          overallResult: 'degraded',
+        })
+        if (currentTest?.id === test.id) {
+          setCurrentTest({ ...test, overallResult: 'degraded' })
+        }
         message.success('已做降级处理')
       },
     })
@@ -121,6 +132,12 @@ const QualityControl: React.FC = () => {
       title: '合格判定',
       content: `确定批次 ${test.batchNo} 检测合格吗？合格后方可进入下一工序。`,
       onOk: () => {
+        updateQualityTest(test.id, {
+          overallResult: 'pass',
+        })
+        if (currentTest?.id === test.id) {
+          setCurrentTest({ ...test, overallResult: 'pass' })
+        }
         message.success('判定为合格，可进入下一工序')
       },
     })
@@ -129,15 +146,37 @@ const QualityControl: React.FC = () => {
   const handleSubmit = () => {
     form.validateFields().then((values) => {
       const items = [
-        { name: '酒精度', value: values.alcohol, unit: '%vol', standard: { min: 10, max: 15 }, result: 'pass' as const },
-        { name: '总酸', value: values.acid, unit: 'g/L', standard: { min: 1.2, max: 2.5 }, result: 'pass' as const },
-        { name: '总酯', value: values.ester, unit: 'g/L', standard: { min: 2.5, max: 4.0 }, result: 'pass' as const },
-        { name: '固形物', value: values.solids, unit: 'g/L', standard: { min: 0, max: 0.5 }, result: 'pass' as const },
+        {
+          name: '酒精度',
+          value: Number(values.alcohol),
+          unit: '%vol',
+          standard: { min: 10, max: 15 },
+          result: (Number(values.alcohol) >= 10 && Number(values.alcohol) <= 15) ? 'pass' as const : 'fail' as const,
+        },
+        {
+          name: '总酸',
+          value: Number(values.acid),
+          unit: 'g/L',
+          standard: { min: 1.2, max: 2.5 },
+          result: (Number(values.acid) >= 1.2 && Number(values.acid) <= 2.5) ? 'pass' as const : 'fail' as const,
+        },
+        {
+          name: '总酯',
+          value: Number(values.ester),
+          unit: 'g/L',
+          standard: { min: 2.5, max: 4.0 },
+          result: (Number(values.ester) >= 2.5 && Number(values.ester) <= 4.0) ? 'pass' as const : 'fail' as const,
+        },
+        {
+          name: '固形物',
+          value: Number(values.solids),
+          unit: 'g/L',
+          standard: { min: 0, max: 0.5 },
+          result: (Number(values.solids) >= 0 && Number(values.solids) <= 0.5) ? 'pass' as const : 'fail' as const,
+        },
       ]
 
-      const overallPass = items.every((item) => {
-        return item.value >= item.standard.min && item.value <= item.standard.max
-      })
+      const overallPass = items.every((item) => item.result === 'pass')
 
       const newTest: QualityTest = {
         id: `Q${Date.now()}`,
@@ -149,7 +188,7 @@ const QualityControl: React.FC = () => {
         overallResult: overallPass ? 'pass' : 'fail',
       }
       addQualityTest(newTest)
-      message.success('检测记录已添加')
+      message.success(overallPass ? '检测记录已添加，全部项目合格' : '检测记录已添加，存在不合格项目')
       setIsModalVisible(false)
       form.resetFields()
     })
@@ -525,48 +564,55 @@ const QualityControl: React.FC = () => {
       >
         {currentTest && (
           <div>
-            <Row gutter={16} style={{ marginBottom: 16 }}>
-              <Col span={12}>
-                <p><strong>批次号：</strong>{currentTest.batchNo}</p>
-                <p><strong>检测阶段：</strong>{getStageText(currentTest.stage)}</p>
-                <p><strong>检测时间：</strong>{currentTest.testTime}</p>
-              </Col>
-              <Col span={12}>
-                <p><strong>检测员：</strong>{currentTest.tester}</p>
-                <p>
-                  <strong>整体结果：</strong>
-                  <Tag color={getResultColor(currentTest.overallResult)}>
-                    {getResultText(currentTest.overallResult)}
-                  </Tag>
-                </p>
-              </Col>
-            </Row>
-            <div className="section-title">检测项目明细</div>
-            <List
-              size="small"
-              dataSource={currentTest.items}
-              renderItem={(item) => (
-                <List.Item>
-                  <List.Item.Meta
-                    title={item.name}
-                    description={`标准范围: ${item.standard.min} - ${item.standard.max} ${item.unit}`}
+            {(() => {
+              const latestTest = qualityTests.find((t) => t.id === currentTest.id) || currentTest
+              return (
+                <>
+                  <Row gutter={16} style={{ marginBottom: 16 }}>
+                    <Col span={12}>
+                      <p><strong>批次号：</strong>{latestTest.batchNo}</p>
+                      <p><strong>检测阶段：</strong>{getStageText(latestTest.stage)}</p>
+                      <p><strong>检测时间：</strong>{latestTest.testTime}</p>
+                    </Col>
+                    <Col span={12}>
+                      <p><strong>检测员：</strong>{latestTest.tester}</p>
+                      <p>
+                        <strong>整体结果：</strong>
+                        <Tag color={getResultColor(latestTest.overallResult)}>
+                          {getResultText(latestTest.overallResult)}
+                        </Tag>
+                      </p>
+                    </Col>
+                  </Row>
+                  <div className="section-title">检测项目明细</div>
+                  <List
+                    size="small"
+                    dataSource={latestTest.items}
+                    renderItem={(item) => (
+                      <List.Item>
+                        <List.Item.Meta
+                          title={item.name}
+                          description={`标准范围: ${item.standard.min} - ${item.standard.max} ${item.unit}`}
+                        />
+                        <Space>
+                          <span style={{ fontWeight: 600 }}>
+                            {item.value} {item.unit}
+                          </span>
+                          <Tag color={item.result === 'pass' ? 'green' : 'red'}>
+                            {item.result === 'pass' ? '合格' : '不合格'}
+                          </Tag>
+                        </Space>
+                      </List.Item>
+                    )}
                   />
-                  <Space>
-                    <span style={{ fontWeight: 600 }}>
-                      {item.value} {item.unit}
-                    </span>
-                    <Tag color={item.result === 'pass' ? 'green' : 'red'}>
-                      {item.result === 'pass' ? '合格' : '不合格'}
-                    </Tag>
-                  </Space>
-                </List.Item>
-              )}
-            />
-            {currentTest.remark && (
-              <div style={{ marginTop: 16, padding: 12, background: '#fffbe6', borderRadius: 4 }}>
-                <strong>备注：</strong>{currentTest.remark}
-              </div>
-            )}
+                  {latestTest.remark && (
+                    <div style={{ marginTop: 16, padding: 12, background: '#fffbe6', borderRadius: 4 }}>
+                      <strong>备注：</strong>{latestTest.remark}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           </div>
         )}
       </Modal>

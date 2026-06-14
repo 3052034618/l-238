@@ -17,6 +17,7 @@ import {
   Progress,
   Tabs,
   List,
+  Alert,
 } from 'antd'
 import {
   ThunderboltOutlined,
@@ -518,92 +519,135 @@ const FermentationMonitor: React.FC = () => {
       >
         {selectedFermenter && (
           <div>
-            <Row gutter={16} style={{ marginBottom: 16 }}>
-              <Col span={8}>
-                <Card size="small">
-                  <Statistic
-                    title="温度"
-                    value={selectedFermenter.temperature}
-                    suffix="°C"
-                    valueStyle={{ color: selectedFermenter.temperature > 35 ? '#ff4d4f' : '#52c41a' }}
-                  />
-                </Card>
-              </Col>
-              <Col span={8}>
-                <Card size="small">
-                  <Statistic title="湿度" value={selectedFermenter.humidity} suffix="%" valueStyle={{ color: '#1677ff' }} />
-                </Card>
-              </Col>
-              <Col span={8}>
-                <Card size="small">
-                  <Statistic
-                    title="酒精度"
-                    value={selectedFermenter.alcoholContent}
-                    suffix="%vol"
-                    valueStyle={{ color: '#722ed1' }}
-                  />
-                </Card>
-              </Col>
-            </Row>
-            <Card size="small" title="24小时趋势" style={{ marginBottom: 16 }}>
-              <ReactECharts option={getTrendChartOption(selectedFermenter)} style={{ height: 280 }} />
-            </Card>
-            <Row gutter={16}>
-              <Col span={12}>
-                <Card size="small" title="基本信息">
-                  <List size="small">
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>设备编号：</span>
-                      <span>{selectedFermenter.id}</span>
-                    </List.Item>
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>设备状态：</span>
-                      <Tag color={getStatusColor(selectedFermenter.status)}>
-                        {getStatusText(selectedFermenter.status)}
-                      </Tag>
-                    </List.Item>
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>总容量：</span>
-                      <span>{selectedFermenter.capacity.toLocaleString()} L</span>
-                    </List.Item>
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>当前容量：</span>
-                      <span>{selectedFermenter.currentVolume.toLocaleString()} L</span>
-                    </List.Item>
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>累计运行：</span>
-                      <span>{selectedFermenter.runHours} 小时</span>
-                    </List.Item>
-                  </List>
-                </Card>
-              </Col>
-              <Col span={12}>
-                <Card size="small" title="当前批次">
-                  <List size="small">
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>批次号：</span>
-                      <span>{selectedFermenter.batchNo || '-'}</span>
-                    </List.Item>
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>配方：</span>
-                      <span>{selectedFermenter.recipe || '-'}</span>
-                    </List.Item>
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>开始时间：</span>
-                      <span>{selectedFermenter.startTime || '-'}</span>
-                    </List.Item>
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>预计结束：</span>
-                      <span>{selectedFermenter.expectedEndTime || '-'}</span>
-                    </List.Item>
-                    <List.Item>
-                      <span style={{ color: '#8c8c8c' }}>冷却系统：</span>
-                      <Tag color="green">运行正常</Tag>
-                    </List.Item>
-                  </List>
-                </Card>
-              </Col>
-            </Row>
+            {(() => {
+              const latestFermenter = fermenters.find((f) => f.id === selectedFermenter.id) || selectedFermenter
+
+              const getCoolingActionText = (action?: string) => {
+                const map: Record<string, string> = {
+                  cooling: '正在冷却',
+                  heating: '正在加热',
+                  humidifying: '正在加湿',
+                  dehumidifying: '正在除湿',
+                }
+                return map[action || ''] || null
+              }
+
+              const getCoolingActionColor = (action?: string) => {
+                const map: Record<string, string> = {
+                  cooling: 'blue',
+                  heating: 'orange',
+                  humidifying: 'cyan',
+                  dehumidifying: 'purple',
+                }
+                return map[action || ''] || 'default'
+              }
+
+              return (
+                <>
+                  {latestFermenter.coolingAction && (
+                    <Alert
+                      message="系统调节已触发"
+                      description={`${getCoolingActionText(latestFermenter.coolingAction)}中 · 触发时间: ${latestFermenter.coolingActionTime}`}
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 16 }}
+                    />
+                  )}
+                  <Row gutter={16} style={{ marginBottom: 16 }}>
+                    <Col span={8}>
+                      <Card size="small">
+                        <Statistic
+                          title="温度"
+                          value={latestFermenter.temperature}
+                          suffix="°C"
+                          valueStyle={{ color: latestFermenter.temperature > 35 ? '#ff4d4f' : '#52c41a' }}
+                        />
+                      </Card>
+                    </Col>
+                    <Col span={8}>
+                      <Card size="small">
+                        <Statistic title="湿度" value={latestFermenter.humidity} suffix="%" valueStyle={{ color: '#1677ff' }} />
+                      </Card>
+                    </Col>
+                    <Col span={8}>
+                      <Card size="small">
+                        <Statistic
+                          title="酒精度"
+                          value={latestFermenter.alcoholContent}
+                          suffix="%vol"
+                          valueStyle={{ color: '#722ed1' }}
+                        />
+                      </Card>
+                    </Col>
+                  </Row>
+                  <Card size="small" title="24小时趋势" style={{ marginBottom: 16 }}>
+                    <ReactECharts option={getTrendChartOption(latestFermenter)} style={{ height: 280 }} />
+                  </Card>
+                  <Row gutter={16}>
+                    <Col span={12}>
+                      <Card size="small" title="基本信息">
+                        <List size="small">
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>设备编号：</span>
+                            <span>{latestFermenter.id}</span>
+                          </List.Item>
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>设备状态：</span>
+                            <Tag color={getStatusColor(latestFermenter.status)}>
+                              {getStatusText(latestFermenter.status)}
+                            </Tag>
+                          </List.Item>
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>总容量：</span>
+                            <span>{latestFermenter.capacity.toLocaleString()} L</span>
+                          </List.Item>
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>当前容量：</span>
+                            <span>{latestFermenter.currentVolume.toLocaleString()} L</span>
+                          </List.Item>
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>累计运行：</span>
+                            <span>{latestFermenter.runHours} 小时</span>
+                          </List.Item>
+                        </List>
+                      </Card>
+                    </Col>
+                    <Col span={12}>
+                      <Card size="small" title="当前批次">
+                        <List size="small">
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>批次号：</span>
+                            <span>{latestFermenter.batchNo || '-'}</span>
+                          </List.Item>
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>配方：</span>
+                            <span>{latestFermenter.recipe || '-'}</span>
+                          </List.Item>
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>开始时间：</span>
+                            <span>{latestFermenter.startTime || '-'}</span>
+                          </List.Item>
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>预计结束：</span>
+                            <span>{latestFermenter.expectedEndTime || '-'}</span>
+                          </List.Item>
+                          <List.Item>
+                            <span style={{ color: '#8c8c8c' }}>冷却系统：</span>
+                            {latestFermenter.coolingAction ? (
+                              <Tag color={getCoolingActionColor(latestFermenter.coolingAction)}>
+                                {getCoolingActionText(latestFermenter.coolingAction)}
+                              </Tag>
+                            ) : (
+                              <Tag color="green">运行正常</Tag>
+                            )}
+                          </List.Item>
+                        </List>
+                      </Card>
+                    </Col>
+                  </Row>
+                </>
+              )
+            })()}
           </div>
         )}
       </Modal>

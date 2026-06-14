@@ -9,6 +9,7 @@ import {
   Form,
   Select,
   Input,
+  InputNumber,
   message,
   Row,
   Col,
@@ -42,14 +43,18 @@ const Maintenance: React.FC = () => {
   const distillers = useAppStore((state) => state.distillers)
   const addMaintenanceOrder = useAppStore((state) => state.addMaintenanceOrder)
   const updateMaintenanceOrder = useAppStore((state) => state.updateMaintenanceOrder)
+  const completeMaintenanceOrder = useAppStore((state) => state.completeMaintenanceOrder)
   const currentUser = useAppStore((state) => state.currentUser)
 
   const [isModalVisible, setIsModalVisible] = useState(false)
   const [isDetailVisible, setIsDetailVisible] = useState(false)
+  const [isCompleteModalVisible, setIsCompleteModalVisible] = useState(false)
   const [currentOrder, setCurrentOrder] = useState<MaintenanceOrder | null>(null)
   const [modalType, setModalType] = useState<'create' | 'process'>('create')
   const [form] = Form.useForm()
+  const [completeForm] = Form.useForm()
   const [activeTab, setActiveTab] = useState('orders')
+  const [selectedParts, setSelectedParts] = useState<{ partId: string; partName: string; quantity: number }[]>([])
 
   const pendingCount = maintenanceOrders.filter((o) => o.status === 'pending').length
   const processingCount = maintenanceOrders.filter((o) => o.status === 'processing' || o.status === 'assigned').length
@@ -131,18 +136,10 @@ const Maintenance: React.FC = () => {
   }
 
   const handleComplete = (order: MaintenanceOrder) => {
-    Modal.confirm({
-      title: '完成工单',
-      content: `确定完成工单 ${order.orderNo} 吗？`,
-      onOk: () => {
-        updateMaintenanceOrder(order.id, {
-          status: 'completed',
-          completeTime: dayjs().format('YYYY-MM-DD HH:mm'),
-          remark: '维修完成，设备运行正常',
-        })
-        message.success('工单已完成')
-      },
-    })
+    setCurrentOrder(order)
+    setSelectedParts([])
+    completeForm.resetFields()
+    setIsCompleteModalVisible(true)
   }
 
   const handleAssign = (order: MaintenanceOrder) => {
@@ -219,6 +216,71 @@ const Maintenance: React.FC = () => {
       })
       message.success({ content: `已生成 ${needMaintenance.length} 条维保工单`, key: 'generate' })
     }, 1500)
+  }
+
+  const handleAddPart = () => {
+    const partId = completeForm.getFieldValue('partId')
+    const quantity = completeForm.getFieldValue('partQuantity')
+    if (!partId || !quantity) return
+    
+    const part = spareParts.find((p) => p.id === partId)
+    if (!part) return
+    
+    if (quantity > part.quantity) {
+      message.error(`${part.name} 库存不足，当前库存: ${part.quantity} ${part.unit}`)
+      return
+    }
+    
+    const exists = selectedParts.find((p) => p.partId === partId)
+    if (exists) {
+      setSelectedParts(
+        selectedParts.map((p) =>
+          p.partId === partId ? { ...p, quantity: p.quantity + quantity } : p,
+        ),
+      )
+    } else {
+      setSelectedParts([...selectedParts, { partId, partName: part.name, quantity }])
+    }
+    completeForm.setFieldsValue({ partId: undefined, partQuantity: undefined })
+  }
+
+  const handleRemovePart = (partId: string) => {
+    setSelectedParts(selectedParts.filter((p) => p.partId !== partId))
+  }
+
+  const handleCompleteSubmit = () => {
+    completeForm.validateFields().then((values) => {
+      if (!currentOrder) return
+      
+      const insufficient = selectedParts.find((p) => {
+        const part = spareParts.find((sp) => sp.id === p.partId)
+        return part && p.quantity > part.quantity
+      })
+      
+      if (insufficient) {
+        message.error('存在备件库存不足，请检查')
+        return
+      }
+      
+      completeMaintenanceOrder(currentOrder.id, selectedParts, values.remark || '', currentUser.name)
+      
+      if (selectedParts.length > 0) {
+        const lowStock = selectedParts.filter((p) => {
+          const part = spareParts.find((sp) => sp.id === p.partId)
+          return part && part.quantity - p.quantity < part.safeStock
+        })
+        if (lowStock.length > 0) {
+          message.warning(`已扣减备件库存，${lowStock.length} 个备件已低于安全库存`)
+        } else {
+          message.success('工单已完成，备件库存已扣减')
+        }
+      } else {
+        message.success('工单已完成')
+      }
+      
+      setIsCompleteModalVisible(false)
+      setSelectedParts([])
+    })
   }
 
   const orderColumns = [
@@ -670,6 +732,84 @@ const Maintenance: React.FC = () => {
             )}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        title="完成工单 - 记录备件使用"
+        open={isCompleteModalVisible}
+        onOk={handleCompleteSubmit}
+        onCancel={() => {
+          setIsCompleteModalVisible(false)
+          setSelectedParts([])
+        }}
+        width={650}
+        okText="确认完成"
+        cancelText="取消"
+      >
+        <Form form={completeForm} layout="vertical">
+          <div style={{ marginBottom: 16, padding: 12, background: '#f5f5f5', borderRadius: 4 }}>
+            <p><strong>工单号：</strong>{currentOrder?.orderNo}</p>
+            <p><strong>设备：</strong>{currentOrder?.equipmentName}</p>
+            <p><strong>类型：</strong>{getTypeText(currentOrder?.type || '')}</p>
+          </div>
+
+          <div className="section-title">选择使用的备件</div>
+          <Row gutter={8} style={{ marginBottom: 12 }}>
+            <Col span={12}>
+              <Form.Item name="partId" label="备件名称" style={{ marginBottom: 0 }}>
+                <Select placeholder="请选择备件">
+                  {spareParts.map((p) => (
+                    <Option key={p.id} value={p.id}>
+                      {p.name} (库存: {p.quantity} {p.unit})
+                    </Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="partQuantity" label="数量" style={{ marginBottom: 0 }}>
+                <InputNumber style={{ width: '100%' }} min={1} step={1} />
+              </Form.Item>
+            </Col>
+            <Col span={4} style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 24 }}>
+              <Button type="dashed" onClick={handleAddPart} block>
+                添加
+              </Button>
+            </Col>
+          </Row>
+
+          {selectedParts.length > 0 && (
+            <div style={{ marginBottom: 16, padding: 12, background: '#f6ffed', borderRadius: 4 }}>
+              <div style={{ fontWeight: 500, marginBottom: 8 }}>已选择的备件：</div>
+              <List
+                size="small"
+                dataSource={selectedParts}
+                renderItem={(item) => {
+                  const part = spareParts.find((p) => p.id === item.partId)
+                  const isLow = part && item.quantity > part.quantity
+                  return (
+                    <List.Item>
+                      <span>
+                        {item.partName} x {item.quantity}
+                        {part && <span style={{ color: '#8c8c8c', fontSize: 12 }}> (库存: {part.quantity})</span>}
+                      </span>
+                      <Space>
+                        {isLow && <Tag color="red">库存不足</Tag>}
+                        <Button type="link" size="small" danger onClick={() => handleRemovePart(item.partId)}>
+                          移除
+                        </Button>
+                      </Space>
+                    </List.Item>
+                  )
+                }}
+              />
+            </div>
+          )}
+
+          <Form.Item name="remark" label="处理备注">
+            <TextArea rows={3} placeholder="请输入处理结果和备注..." />
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   )

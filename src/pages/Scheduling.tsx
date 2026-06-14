@@ -40,6 +40,8 @@ const Scheduling: React.FC = () => {
   const distillers = useAppStore((state) => state.distillers)
   const updateSchedule = useAppStore((state) => state.updateSchedule)
   const addSchedule = useAppStore((state) => state.addSchedule)
+  const approveScheduleAdjust = useAppStore((state) => state.approveScheduleAdjust)
+  const rejectScheduleAdjust = useAppStore((state) => state.rejectScheduleAdjust)
   const currentUser = useAppStore((state) => state.currentUser)
 
   const [isModalVisible, setIsModalVisible] = useState(false)
@@ -116,6 +118,33 @@ const Scheduling: React.FC = () => {
     })
   }
 
+  const handleApproveAdjust = (schedule: Schedule) => {
+    Modal.confirm({
+      title: '批准调整申请',
+      content: `确定批准 ${schedule.batchNo} 的排程调整申请吗？批准后将使用新的排程信息。`,
+      okText: '批准调整',
+      cancelText: '取消',
+      onOk: () => {
+        approveScheduleAdjust(schedule.id, currentUser.name)
+        message.success('调整申请已批准')
+      },
+    })
+  }
+
+  const handleRejectAdjust = (schedule: Schedule) => {
+    Modal.confirm({
+      title: '拒绝调整申请',
+      content: `确定拒绝 ${schedule.batchNo} 的排程调整申请吗？拒绝后将保留原排程信息。`,
+      okText: '拒绝调整',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: () => {
+        rejectScheduleAdjust(schedule.id, currentUser.name)
+        message.success('调整申请已拒绝，原排程已恢复')
+      },
+    })
+  }
+
   const handleCreate = () => {
     setModalType('create')
     form.resetFields()
@@ -175,6 +204,16 @@ const Scheduling: React.FC = () => {
           startTime: values.timeRange[0].format('YYYY-MM-DD HH:mm'),
           endTime: values.timeRange[1].format('YYYY-MM-DD HH:mm'),
           shift: values.shift,
+          originalSchedule: {
+            fermenterId: currentSchedule.fermenterId,
+            fermenterName: currentSchedule.fermenterName,
+            distillerId: currentSchedule.distillerId,
+            distillerName: currentSchedule.distillerName,
+            startTime: currentSchedule.startTime,
+            endTime: currentSchedule.endTime,
+            shift: currentSchedule.shift,
+            status: currentSchedule.status,
+          },
         })
         message.success('调整申请已提交，等待审批')
       }
@@ -272,7 +311,7 @@ const Scheduling: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 220,
+      width: 260,
       fixed: 'right' as const,
       render: (_: any, record: Schedule) => (
         <Space size="small">
@@ -286,6 +325,16 @@ const Scheduling: React.FC = () => {
               </Button>
               <Button type="link" size="small" danger icon={<CloseOutlined />} onClick={() => handleReject(record)}>
                 拒绝
+              </Button>
+            </>
+          )}
+          {record.status === 'adjusting' && currentUser.role === 'director' && (
+            <>
+              <Button type="link" size="small" icon={<CheckOutlined />} onClick={() => handleApproveAdjust(record)}>
+                批准调整
+              </Button>
+              <Button type="link" size="small" danger icon={<CloseOutlined />} onClick={() => handleRejectAdjust(record)}>
+                拒绝调整
               </Button>
             </>
           )}
@@ -472,79 +521,101 @@ const Scheduling: React.FC = () => {
       >
         {currentSchedule && (
           <div>
-            <Row gutter={16}>
-              <Col span={12}>
-                <p><strong>批次号：</strong>{currentSchedule.batchNo}</p>
-                <p><strong>酒品配方：</strong>{currentSchedule.recipeName}</p>
-                <p><strong>发酵罐：</strong>{currentSchedule.fermenterName}</p>
-                <p><strong>蒸馏设备：</strong>{currentSchedule.distillerName || '-'}</p>
-                <p><strong>班次：</strong>{getShiftText(currentSchedule.shift)}</p>
-              </Col>
-              <Col span={12}>
-                <p><strong>开始时间：</strong>{currentSchedule.startTime}</p>
-                <p><strong>结束时间：</strong>{currentSchedule.endTime}</p>
-                <p><strong>状态：</strong>
-                  <Tag color={getStatusColor(currentSchedule.status)}>
-                    {getStatusText(currentSchedule.status)}
-                  </Tag>
-                </p>
-                <p><strong>申请人：</strong>{currentSchedule.operator || '-'}</p>
-                <p><strong>审批人：</strong>{currentSchedule.approver || '-'}</p>
-              </Col>
-            </Row>
-            {currentSchedule.adjustReason && (
-              <div style={{ marginTop: 16, padding: 12, background: '#fffbe6', borderRadius: 4 }}>
-                <strong>调整原因：</strong>{currentSchedule.adjustReason}
-              </div>
-            )}
-            <div style={{ marginTop: 20 }}>
-              <h4>审批流程</h4>
-              <Timeline
-                items={[
-                  {
-                    color: 'green',
-                    children: (
-                      <div>
-                        <p>排程申请提交</p>
-                        <p style={{ fontSize: 12, color: '#8c8c8c' }}>
-                          {currentSchedule.operator} · {currentSchedule.applyTime}
-                        </p>
+            {(() => {
+              const latestSchedule = schedules.find((s) => s.id === currentSchedule.id) || currentSchedule
+              return (
+                <>
+                  <Row gutter={16}>
+                    <Col span={12}>
+                      <p><strong>批次号：</strong>{latestSchedule.batchNo}</p>
+                      <p><strong>酒品配方：</strong>{latestSchedule.recipeName}</p>
+                      <p><strong>发酵罐：</strong>{latestSchedule.fermenterName}</p>
+                      <p><strong>蒸馏设备：</strong>{latestSchedule.distillerName || '-'}</p>
+                      <p><strong>班次：</strong>{getShiftText(latestSchedule.shift)}</p>
+                    </Col>
+                    <Col span={12}>
+                      <p><strong>开始时间：</strong>{latestSchedule.startTime}</p>
+                      <p><strong>结束时间：</strong>{latestSchedule.endTime}</p>
+                      <p><strong>状态：</strong>
+                        <Tag color={getStatusColor(latestSchedule.status)}>
+                          {getStatusText(latestSchedule.status)}
+                        </Tag>
+                      </p>
+                      <p><strong>申请人：</strong>{latestSchedule.operator || '-'}</p>
+                      <p><strong>审批人：</strong>{latestSchedule.approver || '-'}</p>
+                      {latestSchedule.approveTime && (
+                        <p><strong>审批时间：</strong>{latestSchedule.approveTime}</p>
+                      )}
+                    </Col>
+                  </Row>
+                  {latestSchedule.originalSchedule && (
+                    <div style={{ marginTop: 16, padding: 12, background: '#e6f7ff', borderRadius: 4 }}>
+                      <strong>原排程信息：</strong>
+                      <div style={{ marginTop: 8, fontSize: 12 }}>
+                        <p>发酵罐：{latestSchedule.originalSchedule.fermenterName}</p>
+                        <p>时间：{latestSchedule.originalSchedule.startTime} ~ {latestSchedule.originalSchedule.endTime}</p>
+                        <p>班次：{getShiftText(latestSchedule.originalSchedule.shift)}</p>
                       </div>
-                    ),
-                  },
-                  ...(currentSchedule.status !== 'pending'
-                    ? [
+                    </div>
+                  )}
+                  {latestSchedule.adjustReason && (
+                    <div style={{ marginTop: 16, padding: 12, background: '#fffbe6', borderRadius: 4 }}>
+                      <strong>调整原因：</strong>{latestSchedule.adjustReason}
+                    </div>
+                  )}
+                  <div style={{ marginTop: 20 }}>
+                    <h4>审批流程</h4>
+                    <Timeline
+                      items={[
                         {
-                          color: currentSchedule.status === 'rejected' ? 'red' : 'blue',
+                          color: 'green',
                           children: (
                             <div>
-                              <p>
-                                {currentSchedule.status === 'rejected' ? '排程已拒绝' : '排程已批准'}
-                              </p>
+                              <p>排程申请提交</p>
                               <p style={{ fontSize: 12, color: '#8c8c8c' }}>
-                                {currentSchedule.approver} · {currentSchedule.approveTime}
+                                {latestSchedule.operator} · {latestSchedule.applyTime}
                               </p>
                             </div>
                           ),
                         },
-                      ]
-                    : []),
-                  ...(currentSchedule.status === 'approved'
-                    ? [
-                        {
-                          color: '#52c41a',
-                          children: (
-                            <div>
-                              <p>执行中</p>
-                              <p style={{ fontSize: 12, color: '#8c8c8c' }}>已推送至工段终端</p>
-                            </div>
-                          ),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            </div>
+                        ...(latestSchedule.status !== 'pending'
+                          ? [
+                              {
+                                color: latestSchedule.status === 'rejected' ? 'red' : 'blue',
+                                children: (
+                                  <div>
+                                    <p>
+                                      {latestSchedule.status === 'rejected' ? '排程已拒绝' :
+                                       latestSchedule.status === 'adjusting' ? '调整申请待审批' :
+                                       '排程已批准'}
+                                    </p>
+                                    <p style={{ fontSize: 12, color: '#8c8c8c' }}>
+                                      {latestSchedule.approver} · {latestSchedule.approveTime}
+                                    </p>
+                                  </div>
+                                ),
+                              },
+                            ]
+                          : []),
+                        ...(latestSchedule.status === 'approved'
+                          ? [
+                              {
+                                color: '#52c41a',
+                                children: (
+                                  <div>
+                                    <p>执行中</p>
+                                    <p style={{ fontSize: 12, color: '#8c8c8c' }}>已推送至工段终端</p>
+                                  </div>
+                                ),
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                  </div>
+                </>
+              )
+            })()}
           </div>
         )}
       </Modal>
