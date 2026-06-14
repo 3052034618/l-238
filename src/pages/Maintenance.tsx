@@ -221,23 +221,31 @@ const Maintenance: React.FC = () => {
   const handleAddPart = () => {
     const partId = completeForm.getFieldValue('partId')
     const quantity = completeForm.getFieldValue('partQuantity')
-    if (!partId || !quantity) return
+    if (!partId || !quantity || quantity <= 0) {
+      message.error('请选择备件并输入有效数量（大于0）')
+      return
+    }
     
     const part = spareParts.find((p) => p.id === partId)
     if (!part) return
     
-    if (quantity > part.quantity) {
-      message.error(`${part.name} 库存不足，当前库存: ${part.quantity} ${part.unit}`)
+    const exists = selectedParts.find((p) => p.partId === partId)
+    const totalQuantity = exists ? exists.quantity + quantity : quantity
+    
+    if (totalQuantity > part.quantity) {
+      message.error(
+        `${part.name} 库存不足，当前库存: ${part.quantity} ${part.unit}${exists ? `，已选: ${exists.quantity}` : ''}，本次最多可用: ${part.quantity - (exists?.quantity || 0)} ${part.unit}`
+      )
       return
     }
     
-    const exists = selectedParts.find((p) => p.partId === partId)
     if (exists) {
       setSelectedParts(
         selectedParts.map((p) =>
-          p.partId === partId ? { ...p, quantity: p.quantity + quantity } : p,
+          p.partId === partId ? { ...p, quantity: totalQuantity } : p,
         ),
       )
+      message.success(`已累计添加 ${part.name}，当前合计: ${totalQuantity} ${part.unit}`)
     } else {
       setSelectedParts([...selectedParts, { partId, partName: part.name, quantity }])
     }
@@ -767,8 +775,25 @@ const Maintenance: React.FC = () => {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="partQuantity" label="数量" style={{ marginBottom: 0 }}>
-                <InputNumber style={{ width: '100%' }} min={1} step={1} />
+              <Form.Item
+                name="partQuantity"
+                label="数量"
+                style={{ marginBottom: 0 }}
+                rules={[
+                  {
+                    validator: (_, value) => {
+                      if (value === undefined || value === null || value === '') {
+                        return Promise.resolve()
+                      }
+                      if (Number(value) <= 0) {
+                        return Promise.reject('数量必须大于0')
+                      }
+                      return Promise.resolve()
+                    },
+                  },
+                ]}
+              >
+                <InputNumber style={{ width: '100%' }} min={1} step={1} precision={0} />
               </Form.Item>
             </Col>
             <Col span={4} style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 24 }}>

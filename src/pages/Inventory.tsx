@@ -89,6 +89,12 @@ const Inventory: React.FC = () => {
   const handleSubmit = () => {
     form.validateFields().then((values) => {
       const { materialId, quantity, batchNo } = values
+      
+      if (!quantity || quantity <= 0) {
+        message.error('数量必须大于0，请输入有效的数量')
+        return
+      }
+
       const type = activeTab === 'raw' ? 'raw' : activeTab === 'spare' ? 'spare' : 'aging'
       
       if (modalType === 'out') {
@@ -520,8 +526,25 @@ const Inventory: React.FC = () => {
                 ))}
             </Select>
           </Form.Item>
-          <Form.Item name="quantity" label="数量" rules={[{ required: true, message: '请输入数量' }]}>
-            <InputNumber style={{ width: '100%' }} min={0} step={1} />
+          <Form.Item
+            name="quantity"
+            label="数量"
+            rules={[
+              { required: true, message: '请输入数量' },
+              {
+                validator: (_, value) => {
+                  if (value === undefined || value === null || value === '') {
+                    return Promise.reject('请输入数量')
+                  }
+                  if (Number(value) <= 0) {
+                    return Promise.reject('数量必须大于0')
+                  }
+                  return Promise.resolve()
+                },
+              },
+            ]}
+          >
+            <InputNumber style={{ width: '100%' }} min={0.01} step={1} precision={2} />
           </Form.Item>
           {activeTab === 'aging' && (
             <Form.Item name="batchNo" label="批次号">

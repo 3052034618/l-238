@@ -83,13 +83,16 @@ export interface Schedule {
   applyTime?: string
   adjustReason?: string
   originalSchedule?: {
+    date: string
+    shift: 'morning' | 'afternoon' | 'night'
+    recipeId: string
+    recipeName: string
     fermenterId: string
     fermenterName: string
     distillerId?: string
     distillerName?: string
     startTime: string
     endTime: string
-    shift: 'morning' | 'afternoon' | 'night'
     status: 'pending' | 'approved' | 'rejected' | 'adjusting' | 'executing' | 'completed'
   }
   adjustRejected?: boolean

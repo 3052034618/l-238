@@ -129,19 +129,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       schedules: state.schedules.map((s) =>
         s.id === id && s.originalSchedule
           ? {
-              ...s.originalSchedule,
               id: s.id,
               batchNo: s.batchNo,
-              recipeId: s.recipeId,
-              recipeName: s.recipeName,
+              date: s.originalSchedule.date,
+              shift: s.originalSchedule.shift,
+              recipeId: s.originalSchedule.recipeId,
+              recipeName: s.originalSchedule.recipeName,
+              fermenterId: s.originalSchedule.fermenterId,
+              fermenterName: s.originalSchedule.fermenterName,
+              distillerId: s.originalSchedule.distillerId,
+              distillerName: s.originalSchedule.distillerName,
+              startTime: s.originalSchedule.startTime,
+              endTime: s.originalSchedule.endTime,
+              status: s.originalSchedule.status,
               operator: s.operator,
               applyTime: s.applyTime,
-              date: s.date,
-              status: s.originalSchedule.status,
               approver,
               approveTime: dayjs().format('YYYY-MM-DD HH:mm'),
+              originalSchedule: undefined,
+              adjustReason: undefined,
               adjustRejected: true,
-              adjustRejectRemark: '调整申请已拒绝，保留原排程',
+              adjustRejectRemark: '调整申请已拒绝，已恢复原排程',
             } as Schedule
           : s,
       ),
@@ -340,6 +348,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => {
       const newAlarms: AlarmRecord[] = []
 
+      const TEMP_MAX = 35
+      const TEMP_MIN = 28
+      const HUMIDITY_MAX = 80
+      const HUMIDITY_MIN = 60
+      const ALCOHOL_MAX = 15
+
       const updatedFermenters = state.fermenters.map((f) => {
         if (f.status === 'running' || f.status === 'warning') {
           const tempChange = (Math.random() - 0.5) * 1.5
@@ -351,109 +365,122 @@ export const useAppStore = create<AppState>((set, get) => ({
 
           let coolingAction = f.coolingAction
 
-          if (newTemp > 35) {
+          if (newTemp > TEMP_MAX) {
             newStatus = 'warning'
             coolingAction = 'cooling'
             const existing = state.alarms.some(
               (a) => a.deviceId === f.id && a.type === 'temperature' && a.status === 'active',
             )
             if (!existing) {
+              const isCritical = newTemp > TEMP_MAX + 2
               newAlarms.push({
-                id: `A${Date.now()}-${f.id}`,
+                id: `A${Date.now()}-${f.id}-t`,
                 type: 'temperature',
-                level: newTemp > 37 ? 'high' : 'medium',
+                level: isCritical ? 'critical' : 'high',
                 deviceId: f.id,
                 deviceName: f.name,
                 deviceType: 'fermenter',
                 value: newTemp,
-                threshold: 35,
-                message: `发酵罐温度${newTemp > 37 ? '严重' : ''}超过上限阈值，已自动开启冷却系统`,
+                threshold: TEMP_MAX,
+                message: `温度${newTemp}°C超过上限${TEMP_MAX}°C，${isCritical ? '严重' : ''}超限，已自动开启冷却系统`,
                 time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
                 status: 'active',
               })
             }
-          } else if (newTemp < 26) {
+          } else if (newTemp < TEMP_MIN) {
             newStatus = 'warning'
             coolingAction = 'heating'
             const existing = state.alarms.some(
               (a) => a.deviceId === f.id && a.type === 'temperature' && a.status === 'active',
             )
             if (!existing) {
+              const isCritical = newTemp < TEMP_MIN - 3
               newAlarms.push({
-                id: `A${Date.now()}-${f.id}`,
+                id: `A${Date.now()}-${f.id}-t`,
                 type: 'temperature',
-                level: 'medium',
+                level: isCritical ? 'critical' : 'medium',
                 deviceId: f.id,
                 deviceName: f.name,
                 deviceType: 'fermenter',
                 value: newTemp,
-                threshold: 28,
-                message: '发酵罐温度低于下限阈值，已自动开启加热系统',
+                threshold: TEMP_MIN,
+                message: `温度${newTemp}°C低于下限${TEMP_MIN}°C，${isCritical ? '严重' : ''}偏低，已自动开启加热系统`,
                 time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
                 status: 'active',
               })
             }
-          } else if (f.status === 'warning' && newTemp >= 28 && newTemp <= 35) {
+          } else if (f.status === 'warning' && newTemp >= TEMP_MIN && newTemp <= TEMP_MAX) {
             newStatus = 'running'
           }
 
-          if (newHumidity < 55) {
+          if (newHumidity < HUMIDITY_MIN) {
+            newStatus = 'warning'
             coolingAction = 'humidifying'
             const existing = state.alarms.some(
               (a) => a.deviceId === f.id && a.type === 'humidity' && a.status === 'active',
             )
             if (!existing) {
+              const isLow = newHumidity < HUMIDITY_MIN - 5
               newAlarms.push({
                 id: `A${Date.now()}-${f.id}-h`,
                 type: 'humidity',
-                level: 'low',
+                level: isLow ? 'medium' : 'low',
                 deviceId: f.id,
                 deviceName: f.name,
                 deviceType: 'fermenter',
                 value: newHumidity,
-                threshold: 60,
-                message: '发酵罐湿度低于下限阈值，已自动开启加湿系统',
+                threshold: HUMIDITY_MIN,
+                message: `湿度${newHumidity}%低于下限${HUMIDITY_MIN}%，${isLow ? '严重' : ''}偏低，已自动开启加湿系统`,
                 time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
                 status: 'active',
               })
             }
-          } else if (newHumidity > 85) {
+          } else if (newHumidity > HUMIDITY_MAX) {
+            newStatus = 'warning'
             coolingAction = 'dehumidifying'
             const existing = state.alarms.some(
               (a) => a.deviceId === f.id && a.type === 'humidity' && a.status === 'active',
             )
             if (!existing) {
+              const isHigh = newHumidity > HUMIDITY_MAX + 5
               newAlarms.push({
                 id: `A${Date.now()}-${f.id}-h`,
                 type: 'humidity',
-                level: 'low',
+                level: isHigh ? 'high' : 'low',
                 deviceId: f.id,
                 deviceName: f.name,
                 deviceType: 'fermenter',
                 value: newHumidity,
-                threshold: 80,
-                message: '发酵罐湿度超过上限阈值，已自动开启除湿系统',
+                threshold: HUMIDITY_MAX,
+                message: `湿度${newHumidity}%超过上限${HUMIDITY_MAX}%，${isHigh ? '严重' : ''}偏高，已自动开启除湿系统`,
                 time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
                 status: 'active',
               })
             }
+          } else {
+            if (coolingAction === 'humidifying' || coolingAction === 'dehumidifying') {
+              coolingAction = f.coolingAction && f.coolingAction !== 'humidifying' && f.coolingAction !== 'dehumidifying'
+                ? f.coolingAction
+                : undefined
+            }
           }
 
-          if (newAlcohol > 15) {
+          if (newAlcohol > ALCOHOL_MAX) {
             const existing = state.alarms.some(
               (a) => a.deviceId === f.id && a.type === 'alcohol' && a.status === 'active',
             )
             if (!existing) {
+              const isHigh = newAlcohol > ALCOHOL_MAX + 1
               newAlarms.push({
                 id: `A${Date.now()}-${f.id}-a`,
                 type: 'alcohol',
-                level: 'medium',
+                level: isHigh ? 'high' : 'medium',
                 deviceId: f.id,
                 deviceName: f.name,
                 deviceType: 'fermenter',
                 value: Number(newAlcohol),
-                threshold: 15,
-                message: '发酵罐酒精度偏高，请关注发酵进度',
+                threshold: ALCOHOL_MAX,
+                message: `酒精度${newAlcohol}%vol超过阈值${ALCOHOL_MAX}%vol，${isHigh ? '严重' : ''}偏高，请关注发酵进度`,
                 time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
                 status: 'active',
               })
