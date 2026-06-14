@@ -13,6 +13,8 @@ import {
   SettingOutlined,
   LogoutOutlined,
   DatabaseOutlined,
+  SearchOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from './store/useAppStore'
 import Dashboard from './pages/Dashboard'
@@ -23,6 +25,8 @@ import Maintenance from './pages/Maintenance'
 import Statistics from './pages/Statistics'
 import WorkshopVisualization from './pages/WorkshopVisualization'
 import Inventory from './pages/Inventory'
+import BatchTracking from './pages/BatchTracking'
+import StockRecords from './pages/StockRecords'
 import { useState } from 'react'
 
 const { Header, Sider, Content } = Layout
@@ -31,9 +35,25 @@ const menuItems = [
   { key: '/', icon: <DashboardOutlined />, label: '数据概览' },
   { key: '/scheduling', icon: <ScheduleOutlined />, label: '智能排程' },
   { key: '/fermentation', icon: <ThunderboltOutlined />, label: '发酵监测' },
-  { key: '/quality', icon: <ExperimentOutlined />, label: '品质管理' },
+  {
+    key: '/quality',
+    icon: <ExperimentOutlined />,
+    label: '品质管理',
+    children: [
+      { key: '/quality', icon: <ExperimentOutlined />, label: '品质检测' },
+      { key: '/batch-tracking', icon: <SearchOutlined />, label: '批次质量追踪' },
+    ],
+  },
   { key: '/maintenance', icon: <ToolOutlined />, label: '设备维保' },
-  { key: '/inventory', icon: <DatabaseOutlined />, label: '库存管理' },
+  {
+    key: '/inventory',
+    icon: <DatabaseOutlined />,
+    label: '库存管理',
+    children: [
+      { key: '/inventory', icon: <DatabaseOutlined />, label: '库存总览' },
+      { key: '/stock-records', icon: <FileTextOutlined />, label: '库存流水记录' },
+    ],
+  },
   { key: '/statistics', icon: <BarChartOutlined />, label: '统计报表' },
   { key: '/visualization', icon: <AppstoreOutlined />, label: '车间可视化' },
 ]
@@ -100,7 +120,19 @@ function App() {
           }}
         >
           <div style={{ fontSize: 16, fontWeight: 500 }}>
-            {menuItems.find((m) => m.key === location.pathname)?.label || '数据概览'}
+            {(() => {
+              const findLabel = (items: any[]): string | undefined => {
+                for (const item of items) {
+                  if (item.key === location.pathname) return item.label
+                  if (item.children) {
+                    const found = findLabel(item.children)
+                    if (found) return found
+                  }
+                }
+                return undefined
+              }
+              return findLabel(menuItems) || '数据概览'
+            })()}
           </div>
           <Space size={16}>
             <Badge count={activeAlarms} size="small">
@@ -133,8 +165,10 @@ function App() {
             <Route path="/scheduling" element={<Scheduling />} />
             <Route path="/fermentation" element={<FermentationMonitor />} />
             <Route path="/quality" element={<QualityControl />} />
+            <Route path="/batch-tracking" element={<BatchTracking />} />
             <Route path="/maintenance" element={<Maintenance />} />
             <Route path="/inventory" element={<Inventory />} />
+            <Route path="/stock-records" element={<StockRecords />} />
             <Route path="/statistics" element={<Statistics />} />
             <Route path="/visualization" element={<WorkshopVisualization />} />
           </Routes>

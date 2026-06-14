@@ -13,6 +13,7 @@ import {
   ProductionStat,
   BatchRecord,
   User,
+  StockRecord,
 } from '../types'
 import {
   mockFermenters,
@@ -53,6 +54,8 @@ interface AppState {
   batchRecords: BatchRecord[]
   users: User[]
   currentUser: User
+  stockRecords: StockRecord[]
+  addStockRecord: (record: StockRecord) => void
   updateFermenter: (id: string, data: Partial<Fermenter>) => void
   addSchedule: (schedule: Schedule) => void
   updateSchedule: (id: string, data: Partial<Schedule>) => void
@@ -73,6 +76,15 @@ interface AppState {
   getAgingWarehouse: (id: string) => AgingWarehouse | undefined
   approveScheduleAdjust: (id: string, approver: string) => void
   rejectScheduleAdjust: (id: string, approver: string) => void
+  checkScheduleConflict: (params: {
+    fermenterId: string
+    distillerId?: string
+    startTime: string
+    endTime: string
+    excludeScheduleId?: string
+  }) => { hasConflict: boolean; conflicts: string[] }
+  syncScheduleToDevice: (scheduleId: string) => void
+  releaseDeviceFromSchedule: (scheduleId: string) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -90,10 +102,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   batchRecords: mockBatchRecords,
   users: mockUsers,
   currentUser: mockCurrentUser,
+  stockRecords: [],
 
   getRawMaterial: (id) => get().rawMaterials.find((m) => m.id === id),
   getSparePart: (id) => get().spareParts.find((p) => p.id === id),
   getAgingWarehouse: (id) => get().agingWarehouses.find((w) => w.id === id),
+
+  addStockRecord: (record) =>
+    set((state) => ({
+      stockRecords: [record, ...state.stockRecords],
+    })),
 
   updateFermenter: (id, data) =>
     set((state) => ({
@@ -155,6 +173,109 @@ export const useAppStore = create<AppState>((set, get) => ({
       ),
     })),
 
+  syncScheduleToDevice: (scheduleId) =>
+    set((state) => {
+      const schedule = state.schedules.find((s) => s.id === scheduleId)
+      if (!schedule || (schedule.status !== 'approved' && schedule.status !== 'executing')) return state
+
+      const updatedFermenters = state.fermenters.map((f) =>
+        f.id === schedule.fermenterId
+          ? {
+              ...f,
+              batchNo: schedule.batchNo,
+              recipe: schedule.recipeName,
+              expectedEndTime: schedule.endTime,
+              startTime: schedule.startTime,
+              status: f.status === 'idle' || f.status === 'cleaning' ? ('running' as const) : f.status,
+            }
+          : f,
+      )
+
+      const updatedDistillers = schedule.distillerId
+        ? state.distillers.map((d) =>
+            d.id === schedule.distillerId
+              ? {
+                  ...d,
+                  batchNo: schedule.batchNo,
+                  status: d.status === 'idle' || d.status === 'cleaning' ? ('running' as const) : d.status,
+                }
+              : d,
+          )
+        : state.distillers
+
+      return {
+        ...state,
+        fermenters: updatedFermenters,
+        distillers: updatedDistillers,
+      }
+    }),
+
+  releaseDeviceFromSchedule: (scheduleId) =>
+    set((state) => {
+      const schedule = state.schedules.find((s) => s.id === scheduleId)
+      if (!schedule) return state
+
+      const updatedFermenters = state.fermenters.map((f) =>
+        f.id === schedule.fermenterId
+          ? {
+              ...f,
+              batchNo: undefined,
+              recipe: undefined,
+              expectedEndTime: undefined,
+              startTime: undefined,
+              status: 'cleaning' as const,
+            }
+          : f,
+      )
+
+      const updatedDistillers = schedule.distillerId
+        ? state.distillers.map((d) =>
+            d.id === schedule.distillerId
+              ? {
+                  ...d,
+                  batchNo: undefined,
+                  status: 'idle' as const,
+                }
+              : d,
+          )
+        : state.distillers
+
+      return {
+        ...state,
+        fermenters: updatedFermenters,
+        distillers: updatedDistillers,
+      }
+    }),
+
+  checkScheduleConflict: ({ fermenterId, distillerId, startTime, endTime, excludeScheduleId }) => {
+    const schedules = get().schedules
+    const conflicts: string[] = []
+    const start = dayjs(startTime)
+    const end = dayjs(endTime)
+
+    schedules.forEach((s) => {
+      if (excludeScheduleId && s.id === excludeScheduleId) return
+      if (s.status === 'completed' || s.status === 'rejected') return
+
+      const sStart = dayjs(s.startTime)
+      const sEnd = dayjs(s.endTime)
+
+      const hasOverlap = !(end.isBefore(sStart) || start.isAfter(sEnd))
+
+      if (hasOverlap && s.fermenterId === fermenterId) {
+        conflicts.push(`发酵罐 ${s.fermenterName} 在 ${s.startTime} ~ ${s.endTime} 已被批次 ${s.batchNo} 占用`)
+      }
+      if (hasOverlap && distillerId && s.distillerId === distillerId) {
+        conflicts.push(`蒸馏设备 ${s.distillerName} 在 ${s.startTime} ~ ${s.endTime} 已被批次 ${s.batchNo} 占用`)
+      }
+    })
+
+    return {
+      hasConflict: conflicts.length > 0,
+      conflicts,
+    }
+  },
+
   confirmAlarm: (id, handler, remark) =>
     set((state) => ({
       alarms: state.alarms.map((a) =>
@@ -207,15 +328,31 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   completeMaintenanceOrder: (id, partsUsed, remark, handler) => {
     set((state) => {
+      const now = dayjs().format('YYYY-MM-DD HH:mm')
       const updatedParts = [...state.spareParts]
-      partsUsed.forEach((used) => {
+      const newRecords: StockRecord[] = partsUsed.map((used, idx) => {
         const partIndex = updatedParts.findIndex((p) => p.id === used.partId)
+        let unit = '个'
         if (partIndex !== -1) {
+          unit = updatedParts[partIndex].unit || '个'
           updatedParts[partIndex] = {
             ...updatedParts[partIndex],
             quantity: updatedParts[partIndex].quantity - used.quantity,
-            lastUpdate: dayjs().format('YYYY-MM-DD HH:mm'),
+            lastUpdate: now,
           }
+        }
+        return {
+          id: `SR${Date.now()}${idx}${Math.floor(Math.random() * 100)}`,
+          type: 'maintenance' as const,
+          materialType: 'spare' as const,
+          materialId: used.partId,
+          materialName: used.partName,
+          unit,
+          quantity: used.quantity,
+          relatedOrderId: id,
+          operator: handler,
+          time: now,
+          remark: `维保工单领用 ${remark || ''}`,
         }
       })
 
@@ -224,7 +361,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? {
               ...o,
               status: 'completed' as const,
-              completeTime: dayjs().format('YYYY-MM-DD HH:mm'),
+              completeTime: now,
               partsUsed,
               remark,
             }
@@ -234,6 +371,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return {
         spareParts: updatedParts,
         maintenanceOrders: updatedOrders,
+        stockRecords: [...newRecords, ...state.stockRecords],
       }
     })
   },
@@ -247,32 +385,85 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { alarms: [alarm, ...state.alarms] }
     }),
 
-  stockIn: (type, id, quantity) => {
+  stockIn: (type, id, quantity, batchNo) => {
     set((state) => {
       const now = dayjs().format('YYYY-MM-DD HH:mm')
+      let materialName = ''
+      let unit = ''
       if (type === 'raw') {
+        const m = state.rawMaterials.find((x) => x.id === id)
+        materialName = m?.name || ''
+        unit = m?.unit || 'kg'
         return {
           rawMaterials: state.rawMaterials.map((m) =>
-            m.id === id
-              ? { ...m, quantity: m.quantity + quantity, lastUpdate: now }
-              : m,
+            m.id === id ? { ...m, quantity: m.quantity + quantity, lastUpdate: now } : m,
           ),
+          stockRecords: [
+            {
+              id: `SR${Date.now()}${Math.floor(Math.random() * 100)}`,
+              type: 'in',
+              materialType: type,
+              materialId: id,
+              materialName,
+              unit,
+              quantity,
+              batchNo,
+              operator: state.currentUser.name,
+              time: now,
+              remark: '入库',
+            } as StockRecord,
+            ...state.stockRecords,
+          ],
         }
       } else if (type === 'spare') {
+        const p = state.spareParts.find((x) => x.id === id)
+        materialName = p?.name || ''
+        unit = p?.unit || '个'
         return {
           spareParts: state.spareParts.map((p) =>
-            p.id === id
-              ? { ...p, quantity: p.quantity + quantity, lastUpdate: now }
-              : p,
+            p.id === id ? { ...p, quantity: p.quantity + quantity, lastUpdate: now } : p,
           ),
+          stockRecords: [
+            {
+              id: `SR${Date.now()}${Math.floor(Math.random() * 100)}`,
+              type: 'in',
+              materialType: type,
+              materialId: id,
+              materialName,
+              unit,
+              quantity,
+              batchNo,
+              operator: state.currentUser.name,
+              time: now,
+              remark: '入库',
+            } as StockRecord,
+            ...state.stockRecords,
+          ],
         }
       } else if (type === 'aging') {
+        const w = state.agingWarehouses.find((x) => x.id === id)
+        materialName = w?.name || ''
+        unit = 'L'
         return {
           agingWarehouses: state.agingWarehouses.map((w) =>
-            w.id === id
-              ? { ...w, usedCapacity: Math.min(w.usedCapacity + quantity, w.totalCapacity) }
-              : w,
+            w.id === id ? { ...w, usedCapacity: Math.min(w.usedCapacity + quantity, w.totalCapacity) } : w,
           ),
+          stockRecords: [
+            {
+              id: `SR${Date.now()}${Math.floor(Math.random() * 100)}`,
+              type: 'in',
+              materialType: type,
+              materialId: id,
+              materialName,
+              unit,
+              quantity,
+              batchNo,
+              operator: state.currentUser.name,
+              time: now,
+              remark: '入库',
+            } as StockRecord,
+            ...state.stockRecords,
+          ],
         }
       }
       return state
@@ -280,7 +471,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return true
   },
 
-  stockOut: (type, id, quantity) => {
+  stockOut: (type, id, quantity, batchNo) => {
     const state = get()
     if (type === 'raw') {
       const material = state.rawMaterials.find((m) => m.id === id)
@@ -301,29 +492,82 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const now = dayjs().format('YYYY-MM-DD HH:mm')
     set((state) => {
+      let materialName = ''
+      let unit = ''
       if (type === 'raw') {
+        const m = state.rawMaterials.find((x) => x.id === id)
+        materialName = m?.name || ''
+        unit = m?.unit || 'kg'
         return {
           rawMaterials: state.rawMaterials.map((m) =>
-            m.id === id
-              ? { ...m, quantity: m.quantity - quantity, lastUpdate: now }
-              : m,
+            m.id === id ? { ...m, quantity: m.quantity - quantity, lastUpdate: now } : m,
           ),
+          stockRecords: [
+            {
+              id: `SR${Date.now()}${Math.floor(Math.random() * 100)}`,
+              type: 'out',
+              materialType: type,
+              materialId: id,
+              materialName,
+              unit,
+              quantity,
+              batchNo,
+              operator: state.currentUser.name,
+              time: now,
+              remark: '出库',
+            } as StockRecord,
+            ...state.stockRecords,
+          ],
         }
       } else if (type === 'spare') {
+        const p = state.spareParts.find((x) => x.id === id)
+        materialName = p?.name || ''
+        unit = p?.unit || '个'
         return {
           spareParts: state.spareParts.map((p) =>
-            p.id === id
-              ? { ...p, quantity: p.quantity - quantity, lastUpdate: now }
-              : p,
+            p.id === id ? { ...p, quantity: p.quantity - quantity, lastUpdate: now } : p,
           ),
+          stockRecords: [
+            {
+              id: `SR${Date.now()}${Math.floor(Math.random() * 100)}`,
+              type: 'out',
+              materialType: type,
+              materialId: id,
+              materialName,
+              unit,
+              quantity,
+              batchNo,
+              operator: state.currentUser.name,
+              time: now,
+              remark: '出库',
+            } as StockRecord,
+            ...state.stockRecords,
+          ],
         }
       } else if (type === 'aging') {
+        const w = state.agingWarehouses.find((x) => x.id === id)
+        materialName = w?.name || ''
+        unit = 'L'
         return {
           agingWarehouses: state.agingWarehouses.map((w) =>
-            w.id === id
-              ? { ...w, usedCapacity: w.usedCapacity - quantity }
-              : w,
+            w.id === id ? { ...w, usedCapacity: w.usedCapacity - quantity } : w,
           ),
+          stockRecords: [
+            {
+              id: `SR${Date.now()}${Math.floor(Math.random() * 100)}`,
+              type: 'out',
+              materialType: type,
+              materialId: id,
+              materialName,
+              unit,
+              quantity,
+              batchNo,
+              operator: state.currentUser.name,
+              time: now,
+              remark: '出库',
+            } as StockRecord,
+            ...state.stockRecords,
+          ],
         }
       }
       return state

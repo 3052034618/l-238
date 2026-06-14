@@ -16,6 +16,10 @@ import {
   Statistic,
   Timeline,
   Badge,
+  Tabs,
+  Tooltip,
+  Alert,
+  List,
 } from 'antd'
 import {
   PlusOutlined,
@@ -25,6 +29,9 @@ import {
   EditOutlined,
   EyeOutlined,
   ThunderboltOutlined,
+  CalendarOutlined,
+  UnorderedListOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from '../store/useAppStore'
 import type { Schedule } from '../types'
@@ -32,6 +39,9 @@ import dayjs from 'dayjs'
 
 const { RangePicker } = DatePicker
 const { TextArea } = Input
+const { Option } = Select
+
+type ViewMode = 'list' | 'calendar'
 
 const Scheduling: React.FC = () => {
   const schedules = useAppStore((state) => state.schedules)
@@ -42,6 +52,9 @@ const Scheduling: React.FC = () => {
   const addSchedule = useAppStore((state) => state.addSchedule)
   const approveScheduleAdjust = useAppStore((state) => state.approveScheduleAdjust)
   const rejectScheduleAdjust = useAppStore((state) => state.rejectScheduleAdjust)
+  const checkScheduleConflict = useAppStore((state) => state.checkScheduleConflict)
+  const syncScheduleToDevice = useAppStore((state) => state.syncScheduleToDevice)
+  const releaseDeviceFromSchedule = useAppStore((state) => state.releaseDeviceFromSchedule)
   const currentUser = useAppStore((state) => state.currentUser)
 
   const [isModalVisible, setIsModalVisible] = useState(false)
@@ -49,6 +62,8 @@ const Scheduling: React.FC = () => {
   const [currentSchedule, setCurrentSchedule] = useState<Schedule | null>(null)
   const [modalType, setModalType] = useState<'create' | 'adjust' | 'approve'>('create')
   const [form] = Form.useForm()
+  const [viewMode, setViewMode] = useState<ViewMode>('list')
+  const [calendarDate, setCalendarDate] = useState(dayjs())
 
   const getStatusText = (status: string) => {
     const textMap: Record<string, string> = {
@@ -83,10 +98,19 @@ const Scheduling: React.FC = () => {
     return textMap[shift] || shift
   }
 
+  const getShiftShort = (shift: string) => {
+    const map: Record<string, string> = {
+      morning: '早',
+      afternoon: '中',
+      night: '夜',
+    }
+    return map[shift] || shift
+  }
+
   const handleApprove = (schedule: Schedule) => {
     Modal.confirm({
       title: '确认批准排程',
-      content: `确定批准 ${schedule.batchNo} 的排程吗？批准后将推送至各工段终端。`,
+      content: `确定批准 ${schedule.batchNo} 的排程吗？批准后将推送至各工段终端，并同步占用对应发酵罐/蒸馏设备。`,
       okText: '批准',
       cancelText: '取消',
       onOk: () => {
@@ -95,7 +119,8 @@ const Scheduling: React.FC = () => {
           approver: currentUser.name,
           approveTime: dayjs().format('YYYY-MM-DD HH:mm'),
         })
-        message.success('排程已批准')
+        setTimeout(() => syncScheduleToDevice(schedule.id), 0)
+        message.success('排程已批准，设备已同步占用')
       },
     })
   }
@@ -103,7 +128,7 @@ const Scheduling: React.FC = () => {
   const handleReject = (schedule: Schedule) => {
     Modal.confirm({
       title: '拒绝排程',
-      content: `确定拒绝 ${schedule.batchNo} 的排程吗？`,
+      content: `确定拒绝 ${schedule.batchNo} 的排程吗？拒绝后将释放相关设备。`,
       okText: '拒绝',
       okType: 'danger',
       cancelText: '取消',
@@ -113,6 +138,7 @@ const Scheduling: React.FC = () => {
           approver: currentUser.name,
           approveTime: dayjs().format('YYYY-MM-DD HH:mm'),
         })
+        releaseDeviceFromSchedule(schedule.id)
         message.success('排程已拒绝')
       },
     })
@@ -121,12 +147,13 @@ const Scheduling: React.FC = () => {
   const handleApproveAdjust = (schedule: Schedule) => {
     Modal.confirm({
       title: '批准调整申请',
-      content: `确定批准 ${schedule.batchNo} 的排程调整申请吗？批准后将使用新的排程信息。`,
+      content: `确定批准 ${schedule.batchNo} 的排程调整申请吗？批准后将使用新的排程信息并同步更新设备占用。`,
       okText: '批准调整',
       cancelText: '取消',
       onOk: () => {
         approveScheduleAdjust(schedule.id, currentUser.name)
-        message.success('调整申请已批准')
+        setTimeout(() => syncScheduleToDevice(schedule.id), 0)
+        message.success('调整申请已批准，设备已更新')
       },
     })
   }
@@ -134,13 +161,13 @@ const Scheduling: React.FC = () => {
   const handleRejectAdjust = (schedule: Schedule) => {
     Modal.confirm({
       title: '拒绝调整申请',
-      content: `确定拒绝 ${schedule.batchNo} 的排程调整申请吗？拒绝后将保留原排程信息。`,
+      content: `确定拒绝 ${schedule.batchNo} 的排程调整申请吗？拒绝后将完全恢复原排程信息（配方、设备、班次、时间）。`,
       okText: '拒绝调整',
       okType: 'danger',
       cancelText: '取消',
       onOk: () => {
         rejectScheduleAdjust(schedule.id, currentUser.name)
-        message.success('调整申请已拒绝，原排程已恢复')
+        message.success('调整申请已拒绝，原排程已完全恢复')
       },
     })
   }
@@ -171,6 +198,44 @@ const Scheduling: React.FC = () => {
 
   const handleModalOk = () => {
     form.validateFields().then((values) => {
+      const startTime = values.timeRange[0].format('YYYY-MM-DD HH:mm')
+      const endTime = values.timeRange[1].format('YYYY-MM-DD HH:mm')
+      const excludeScheduleId = modalType === 'adjust' && currentSchedule ? currentSchedule.id : undefined
+
+      const { hasConflict, conflicts } = checkScheduleConflict({
+        fermenterId: values.fermenterId,
+        distillerId: values.distillerId,
+        startTime,
+        endTime,
+        excludeScheduleId,
+      })
+
+      if (hasConflict) {
+        Modal.error({
+          title: '设备时间冲突',
+          width: 520,
+          content: (
+            <div>
+              <Alert
+                type="error"
+                showIcon
+                icon={<WarningOutlined />}
+                message="检测到以下设备占用冲突，请调整后再提交："
+                style={{ marginBottom: 12 }}
+              />
+              <ul style={{ paddingLeft: 20, margin: 0 }}>
+                {conflicts.map((c, idx) => (
+                  <li key={idx} style={{ marginBottom: 4, color: '#cf1322' }}>
+                    {c}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ),
+        })
+        return
+      }
+
       if (modalType === 'create') {
         const newSchedule: Schedule = {
           id: `S${Date.now()}`,
@@ -183,8 +248,8 @@ const Scheduling: React.FC = () => {
           fermenterName: fermenters.find((f) => f.id === values.fermenterId)?.name || '',
           distillerId: values.distillerId,
           distillerName: distillers.find((d) => d.id === values.distillerId)?.name || '',
-          startTime: values.timeRange[0].format('YYYY-MM-DD HH:mm'),
-          endTime: values.timeRange[1].format('YYYY-MM-DD HH:mm'),
+          startTime,
+          endTime,
           status: 'pending',
           applyTime: dayjs().format('YYYY-MM-DD HH:mm'),
           operator: currentUser.name,
@@ -201,8 +266,8 @@ const Scheduling: React.FC = () => {
           fermenterName: fermenters.find((f) => f.id === values.fermenterId)?.name || '',
           distillerId: values.distillerId,
           distillerName: distillers.find((d) => d.id === values.distillerId)?.name || '',
-          startTime: values.timeRange[0].format('YYYY-MM-DD HH:mm'),
-          endTime: values.timeRange[1].format('YYYY-MM-DD HH:mm'),
+          startTime,
+          endTime,
           shift: values.shift,
           date: values.timeRange[0].format('YYYY-MM-DD'),
           originalSchedule: {
@@ -229,22 +294,25 @@ const Scheduling: React.FC = () => {
   const handleGenerateSchedule = () => {
     message.loading({ content: '正在智能生成排程...', key: 'generate' })
     setTimeout(() => {
-      const fermenter = fermenters.find((f) => f.status === 'idle')
-      if (fermenter) {
-        const recipe = recipes[Math.floor(Math.random() * recipes.length)]
+      const availableFermenter = fermenters.find(
+        (f) => !schedules.some((s) => s.fermenterId === f.id && s.status !== 'completed' && s.status !== 'rejected'),
+      )
+      const availableRecipe = recipes[0]
+
+      if (availableFermenter && availableRecipe) {
         const newSchedule: Schedule = {
           id: `S${Date.now()}`,
           date: dayjs().add(1, 'day').format('YYYY-MM-DD'),
           shift: 'morning',
           batchNo: `B${dayjs().add(1, 'day').format('YYYYMMDD')}01`,
-          recipeId: recipe.id,
-          recipeName: recipe.name,
-          fermenterId: fermenter.id,
-          fermenterName: fermenter.name,
+          recipeId: availableRecipe.id,
+          recipeName: availableRecipe.name,
+          fermenterId: availableFermenter.id,
+          fermenterName: availableFermenter.name,
           startTime: dayjs().add(1, 'day').hour(8).minute(0).format('YYYY-MM-DD HH:mm'),
           endTime: dayjs()
             .add(1, 'day')
-            .add(recipe.fermentationDays, 'day')
+            .add(availableRecipe.fermentationDays, 'day')
             .hour(18)
             .minute(0)
             .format('YYYY-MM-DD HH:mm'),
@@ -266,6 +334,11 @@ const Scheduling: React.FC = () => {
       dataIndex: 'batchNo',
       key: 'batchNo',
       width: 140,
+      render: (text: string, record: Schedule) => (
+        <Button type="link" style={{ padding: 0 }} onClick={() => handleViewDetail(record)}>
+          {text}
+        </Button>
+      ),
     },
     {
       title: '酒品配方',
@@ -357,6 +430,225 @@ const Scheduling: React.FC = () => {
   const adjustingCount = schedules.filter((s) => s.status === 'adjusting').length
   const todayCount = schedules.filter((s) => s.date === dayjs().format('YYYY-MM-DD')).length
 
+  const weekDays = Array.from({ length: 7 }, (_, i) => calendarDate.startOf('week').add(i, 'day'))
+  const shifts: Array<'morning' | 'afternoon' | 'night'> = ['morning', 'afternoon', 'night']
+
+  const getScheduleForSlot = (date: dayjs.Dayjs, shift: string) => {
+    const dateStr = date.format('YYYY-MM-DD')
+    return schedules.filter((s) => s.date === dateStr && s.shift === shift && s.status !== 'completed' && s.status !== 'rejected')
+  }
+
+  const renderCalendarView = () => (
+    <div>
+      <Row gutter={[8, 8]} style={{ marginBottom: 16 }} align="middle">
+        <Col>
+          <Button.Group>
+            <Button icon={<CalendarOutlined />} onClick={() => setCalendarDate(calendarDate.subtract(1, 'week'))}>
+              上一周
+            </Button>
+            <Button
+              icon={<CalendarOutlined />}
+              onClick={() => setCalendarDate(dayjs())}
+              type={calendarDate.isSame(dayjs(), 'week') ? 'primary' : 'default'}
+            >
+              本周
+            </Button>
+            <Button icon={<CalendarOutlined />} onClick={() => setCalendarDate(calendarDate.add(1, 'week'))}>
+              下一周
+            </Button>
+          </Button.Group>
+        </Col>
+        <Col>
+          <span style={{ fontSize: 16, fontWeight: 500 }}>
+            {calendarDate.startOf('week').format('YYYY年MM月DD日')} - {calendarDate.endOf('week').format('MM月DD日')}
+          </span>
+        </Col>
+      </Row>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="calendar-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={{ border: '1px solid #f0f0f0', padding: 8, width: 80, background: '#fafafa' }}>班次</th>
+              {weekDays.map((d) => (
+                <th
+                  key={d.format('YYYY-MM-DD')}
+                  style={{
+                    border: '1px solid #f0f0f0',
+                    padding: 8,
+                    background: d.isSame(dayjs(), 'day') ? '#e6f4ff' : '#fafafa',
+                    fontWeight: 500,
+                  }}
+                >
+                  {['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.day()]} {d.format('MM/DD')}
+                  {d.isSame(dayjs(), 'day') && <Tag color="blue" style={{ marginLeft: 4 }}>今天</Tag>}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shifts.map((shift) => (
+              <tr key={shift}>
+                <td style={{ border: '1px solid #f0f0f0', padding: 8, background: '#fafafa', fontWeight: 500 }}>
+                  <div>{getShiftShort(shift)}班</div>
+                  <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 'normal' }}>
+                    {shift === 'morning'
+                      ? '08-16'
+                      : shift === 'afternoon'
+                      ? '16-24'
+                      : '00-08'}
+                  </div>
+                </td>
+                {weekDays.map((d) => {
+                  const daySchedules = getScheduleForSlot(d, shift)
+                  return (
+                    <td
+                      key={d.format('YYYY-MM-DD') + shift}
+                      style={{
+                        border: '1px solid #f0f0f0',
+                        padding: 4,
+                        verticalAlign: 'top',
+                        minHeight: 90,
+                        height: 90,
+                        background: d.isSame(dayjs(), 'day') ? '#fafcff' : '#ffffff',
+                      }}
+                    >
+                      {daySchedules.length === 0 ? (
+                        <div style={{ fontSize: 11, color: '#bfbfbf', textAlign: 'center', paddingTop: 20 }}>空闲</div>
+                      ) : (
+                        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                          {daySchedules.slice(0, 3).map((s) => (
+                            <Tooltip
+                              key={s.id}
+                              title={`${s.batchNo} · ${s.recipeName} · ${s.fermenterName}${
+                                s.distillerName ? ' / ' + s.distillerName : ''
+                              }\n状态: ${getStatusText(s.status)}\n${s.startTime} ~ ${s.endTime}`}
+                            >
+                              <div
+                                onClick={() => handleViewDetail(s)}
+                                style={{
+                                  padding: '4px 6px',
+                                  borderRadius: 4,
+                                  cursor: 'pointer',
+                                  fontSize: 11,
+                                  lineHeight: 1.4,
+                                  background:
+                                    s.status === 'approved' || s.status === 'executing'
+                                      ? '#f6ffed'
+                                      : s.status === 'adjusting'
+                                      ? '#fff7e6'
+                                      : s.status === 'rejected'
+                                      ? '#fff1f0'
+                                      : '#e6f4ff',
+                                  borderLeft: `3px solid ${
+                                    s.status === 'approved' || s.status === 'executing'
+                                      ? '#52c41a'
+                                      : s.status === 'adjusting'
+                                      ? '#fa8c16'
+                                      : s.status === 'rejected'
+                                      ? '#f5222d'
+                                      : '#1677ff'
+                                  }`,
+                                }}
+                              >
+                                <div style={{ fontWeight: 500 }}>{s.batchNo}</div>
+                                <div style={{ fontSize: 10, color: '#8c8c8c' }}>
+                                  {s.recipeName.slice(0, 8)}
+                                </div>
+                                <Tag
+                                  style={{ margin: 0, marginTop: 2 }}
+                                  color={getStatusColor(s.status)}
+                                >
+                                  {getStatusText(s.status)}
+                                </Tag>
+                              </div>
+                            </Tooltip>
+                          ))}
+                          {daySchedules.length > 3 && (
+                            <div style={{ fontSize: 11, color: '#8c8c8c', textAlign: 'center' }}>
+                              共 {daySchedules.length} 条
+                            </div>
+                          )}
+                        </Space>
+                      )}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col span={12}>
+          <Card title="发酵罐占用" size="small" className="card-shadow">
+            <List
+              size="small"
+              dataSource={fermenters}
+              renderItem={(f) => {
+                const busy = schedules.find(
+                  (s) =>
+                    s.fermenterId === f.id &&
+                    s.status !== 'completed' &&
+                    s.status !== 'rejected',
+                )
+                return (
+                  <List.Item>
+                    <List.Item.Meta
+                      title={f.name}
+                      description={
+                        busy ? (
+                          <span>
+                            占用: <Tag color="orange">{busy.batchNo}</Tag> {busy.startTime.slice(5)}
+                          </span>
+                        ) : (
+                          <Tag color="green">空闲</Tag>
+                        )
+                      }
+                    />
+                    <Badge status={busy ? 'processing' : 'default'} />
+                  </List.Item>
+                )
+              }}
+            />
+          </Card>
+        </Col>
+        <Col span={12}>
+          <Card title="蒸馏设备占用" size="small" className="card-shadow">
+            <List
+              size="small"
+              dataSource={distillers}
+              renderItem={(d) => {
+                const busy = schedules.find(
+                  (s) =>
+                    s.distillerId === d.id &&
+                    s.status !== 'completed' &&
+                    s.status !== 'rejected',
+                )
+                return (
+                  <List.Item>
+                    <List.Item.Meta
+                      title={d.name}
+                      description={
+                        busy ? (
+                          <span>
+                            占用: <Tag color="orange">{busy.batchNo}</Tag>
+                          </span>
+                        ) : (
+                          <Tag color="green">空闲</Tag>
+                        )
+                      }
+                    />
+                    <Badge status={busy ? 'processing' : 'default'} />
+                  </List.Item>
+                )
+              }}
+            />
+          </Card>
+        </Col>
+      </Row>
+    </div>
+  )
+
   return (
     <div className="page-container">
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -405,6 +697,26 @@ const Scheduling: React.FC = () => {
       <Card
         title="酿造排程管理"
         className="card-shadow"
+        tabList={[
+          {
+            key: 'list',
+            tab: (
+              <span>
+                <UnorderedListOutlined /> 列表视图
+              </span>
+            ),
+          },
+          {
+            key: 'calendar',
+            tab: (
+              <span>
+                <CalendarOutlined /> 日历视图
+              </span>
+            ),
+          },
+        ]}
+        activeTabKey={viewMode}
+        onTabChange={(k) => setViewMode(k as ViewMode)}
         extra={
           <Space>
             <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleGenerateSchedule}>
@@ -416,13 +728,11 @@ const Scheduling: React.FC = () => {
           </Space>
         }
       >
-        <Table
-          columns={columns}
-          dataSource={schedules}
-          rowKey="id"
-          pagination={{ pageSize: 8 }}
-          scroll={{ x: 1200 }}
-        />
+        {viewMode === 'list' ? (
+          <Table columns={columns} dataSource={schedules} rowKey="id" pagination={{ pageSize: 8 }} scroll={{ x: 1200 }} />
+        ) : (
+          renderCalendarView()
+        )}
       </Card>
 
       <Modal
@@ -433,20 +743,17 @@ const Scheduling: React.FC = () => {
         width={600}
         okText="提交"
         cancelText="取消"
+        confirmLoading={false}
       >
         <Form form={form} layout="vertical">
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item
-                name="recipeId"
-                label="酒品配方"
-                rules={[{ required: true, message: '请选择酒品配方' }]}
-              >
+              <Form.Item name="recipeId" label="酒品配方" rules={[{ required: true, message: '请选择酒品配方' }]}>
                 <Select placeholder="请选择配方">
                   {recipes.map((r) => (
-                    <Select.Option key={r.id} value={r.id}>
+                    <Option key={r.id} value={r.id}>
                       {r.name} (发酵{r.fermentationDays}天)
-                    </Select.Option>
+                    </Option>
                   ))}
                 </Select>
               </Form.Item>
@@ -454,65 +761,60 @@ const Scheduling: React.FC = () => {
             <Col span={12}>
               <Form.Item name="shift" label="班次" rules={[{ required: true, message: '请选择班次' }]}>
                 <Select placeholder="请选择班次">
-                  <Select.Option value="morning">早班 (08:00-16:00)</Select.Option>
-                  <Select.Option value="afternoon">中班 (16:00-00:00)</Select.Option>
-                  <Select.Option value="night">夜班 (00:00-08:00)</Select.Option>
+                  <Option value="morning">早班 (08:00-16:00)</Option>
+                  <Option value="afternoon">中班 (16:00-00:00)</Option>
+                  <Option value="night">夜班 (00:00-08:00)</Option>
                 </Select>
               </Form.Item>
             </Col>
           </Row>
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item
-                name="fermenterId"
-                label="发酵罐"
-                rules={[{ required: true, message: '请选择发酵罐' }]}
-              >
+              <Form.Item name="fermenterId" label="发酵罐" rules={[{ required: true, message: '请选择发酵罐' }]}>
                 <Select placeholder="请选择发酵罐">
-                  {fermenters
-                    .filter((f) => f.status === 'idle' || f.status === 'cleaning')
-                    .map((f) => (
-                      <Select.Option key={f.id} value={f.id}>
-                        {f.name} ({f.status === 'idle' ? '空闲' : '清洗中'})
-                      </Select.Option>
-                    ))}
+                  {fermenters.map((f) => (
+                    <Option key={f.id} value={f.id}>
+                      {f.name} ({f.capacity.toLocaleString()}L)
+                    </Option>
+                  ))}
                 </Select>
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="distillerId" label="蒸馏设备">
-                <Select placeholder="请选择蒸馏设备（可选）">
-                  {distillers
-                    .filter((d) => d.status === 'idle')
-                    .map((d) => (
-                      <Select.Option key={d.id} value={d.id}>
-                        {d.name}
-                      </Select.Option>
-                    ))}
+              <Form.Item name="distillerId" label="蒸馏设备（可选）">
+                <Select placeholder="请选择蒸馏设备" allowClear>
+                  {distillers.map((d) => (
+                    <Option key={d.id} value={d.id}>
+                      {d.name}
+                    </Option>
+                  ))}
                 </Select>
               </Form.Item>
             </Col>
           </Row>
           <Form.Item
             name="timeRange"
-            label="生产时间"
-            rules={[{ required: true, message: '请选择生产时间' }]}
+            label="生产时间范围"
+            rules={[{ required: true, message: '请选择生产时间范围' }]}
           >
             <RangePicker
               showTime={{ format: 'HH:mm' }}
               format="YYYY-MM-DD HH:mm"
               style={{ width: '100%' }}
+              placeholder={['开始时间', '结束时间']}
             />
           </Form.Item>
           {modalType === 'adjust' && (
-            <Form.Item
-              name="reason"
-              label="调整原因"
-              rules={[{ required: true, message: '请填写调整原因' }]}
-            >
-              <TextArea rows={3} placeholder="请详细说明调整原因..." />
+            <Form.Item name="reason" label="调整原因" rules={[{ required: true, message: '请输入调整原因' }]}>
+              <TextArea rows={3} placeholder="请说明调整原因..." />
             </Form.Item>
           )}
+          <Alert
+            type="info"
+            showIcon
+            message="提交前会自动检查发酵罐和蒸馏设备的时间冲突"
+            style={{ fontSize: 12 }}
+          />
         </Form>
       </Modal>
 
@@ -521,7 +823,7 @@ const Scheduling: React.FC = () => {
         open={isDetailVisible}
         onCancel={() => setIsDetailVisible(false)}
         footer={null}
-        width={700}
+        width={720}
       >
         {currentSchedule && (
           <div>
@@ -540,23 +842,22 @@ const Scheduling: React.FC = () => {
                     <Col span={12}>
                       <p><strong>开始时间：</strong>{latestSchedule.startTime}</p>
                       <p><strong>结束时间：</strong>{latestSchedule.endTime}</p>
-                      <p><strong>状态：</strong>
-                        <Tag color={getStatusColor(latestSchedule.status)}>
-                          {getStatusText(latestSchedule.status)}
-                        </Tag>
+                      <p>
+                        <strong>状态：</strong>
+                        <Tag color={getStatusColor(latestSchedule.status)}>{getStatusText(latestSchedule.status)}</Tag>
                       </p>
                       <p><strong>申请人：</strong>{latestSchedule.operator || '-'}</p>
                       <p><strong>审批人：</strong>{latestSchedule.approver || '-'}</p>
-                      {latestSchedule.approveTime && (
-                        <p><strong>审批时间：</strong>{latestSchedule.approveTime}</p>
-                      )}
+                      {latestSchedule.approveTime && <p><strong>审批时间：</strong>{latestSchedule.approveTime}</p>}
                     </Col>
                   </Row>
                   {latestSchedule.originalSchedule && (
                     <div style={{ marginTop: 16, padding: 12, background: '#e6f7ff', borderRadius: 4 }}>
-                      <strong>原排程信息：</strong>
+                      <strong>原排程信息（调整中）：</strong>
                       <div style={{ marginTop: 8, fontSize: 12 }}>
+                        <p>配方：{latestSchedule.originalSchedule.recipeName}</p>
                         <p>发酵罐：{latestSchedule.originalSchedule.fermenterName}</p>
+                        <p>蒸馏设备：{latestSchedule.originalSchedule.distillerName || '-'}</p>
                         <p>时间：{latestSchedule.originalSchedule.startTime} ~ {latestSchedule.originalSchedule.endTime}</p>
                         <p>班次：{getShiftText(latestSchedule.originalSchedule.shift)}</p>
                       </div>
@@ -565,6 +866,11 @@ const Scheduling: React.FC = () => {
                   {latestSchedule.adjustReason && (
                     <div style={{ marginTop: 16, padding: 12, background: '#fffbe6', borderRadius: 4 }}>
                       <strong>调整原因：</strong>{latestSchedule.adjustReason}
+                    </div>
+                  )}
+                  {latestSchedule.adjustRejectRemark && (
+                    <div style={{ marginTop: 16, padding: 12, background: '#fff1f0', borderRadius: 4 }}>
+                      <strong>审批备注：</strong>{latestSchedule.adjustRejectRemark}
                     </div>
                   )}
                   <div style={{ marginTop: 20 }}>
@@ -585,13 +891,21 @@ const Scheduling: React.FC = () => {
                         ...(latestSchedule.status !== 'pending'
                           ? [
                               {
-                                color: latestSchedule.status === 'rejected' ? 'red' : 'blue',
+                                color: latestSchedule.status === 'rejected' || latestSchedule.adjustRejected
+                                  ? 'red'
+                                  : latestSchedule.status === 'adjusting'
+                                  ? 'orange'
+                                  : 'blue',
                                 children: (
                                   <div>
                                     <p>
-                                      {latestSchedule.status === 'rejected' ? '排程已拒绝' :
-                                       latestSchedule.status === 'adjusting' ? '调整申请待审批' :
-                                       '排程已批准'}
+                                      {latestSchedule.status === 'rejected'
+                                        ? '排程已拒绝'
+                                        : latestSchedule.status === 'adjusting'
+                                        ? '调整申请待审批'
+                                        : latestSchedule.adjustRejected
+                                        ? '调整申请已拒绝，恢复原排程'
+                                        : '排程已批准'}
                                     </p>
                                     <p style={{ fontSize: 12, color: '#8c8c8c' }}>
                                       {latestSchedule.approver} · {latestSchedule.approveTime}
@@ -601,14 +915,16 @@ const Scheduling: React.FC = () => {
                               },
                             ]
                           : []),
-                        ...(latestSchedule.status === 'approved'
+                        ...(latestSchedule.status === 'approved' || latestSchedule.status === 'executing'
                           ? [
                               {
                                 color: '#52c41a',
                                 children: (
                                   <div>
                                     <p>执行中</p>
-                                    <p style={{ fontSize: 12, color: '#8c8c8c' }}>已推送至工段终端</p>
+                                    <p style={{ fontSize: 12, color: '#8c8c8c' }}>
+                                      已推送至工段终端 · 发酵罐/蒸馏设备已占用
+                                    </p>
                                   </div>
                                 ),
                               },

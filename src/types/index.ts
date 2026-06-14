@@ -21,8 +21,9 @@ export interface Distiller {
   id: string
   name: string
   capacity: number
-  status: 'running' | 'idle' | 'maintenance' | 'error'
+  status: 'running' | 'idle' | 'cleaning' | 'maintenance' | 'error'
   currentBatch?: string
+  batchNo?: string
   temperature: number
   pressure: number
   runHours: number
@@ -194,4 +195,21 @@ export interface User {
   role: 'director' | 'foreman' | 'operator' | 'quality' | 'maintenance'
   department: string
   avatar?: string
+}
+
+export type StockRecordType = 'in' | 'out' | 'maintenance'
+
+export interface StockRecord {
+  id: string
+  type: StockRecordType
+  materialType: 'raw' | 'spare' | 'aging'
+  materialId: string
+  materialName: string
+  unit: string
+  quantity: number
+  batchNo?: string
+  relatedOrderId?: string
+  operator: string
+  time: string
+  remark?: string
 }
