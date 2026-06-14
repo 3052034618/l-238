@@ -14,6 +14,8 @@ import {
   BatchRecord,
   User,
   StockRecord,
+  StockCheckOrder,
+  StockCheckItem,
 } from '../types'
 import {
   mockFermenters,
@@ -55,7 +57,12 @@ interface AppState {
   users: User[]
   currentUser: User
   stockRecords: StockRecord[]
+  stockCheckOrders: StockCheckOrder[]
   addStockRecord: (record: StockRecord) => void
+  initSyncSchedulesToDevice: () => void
+  startSchedule: (id: string, operator: string) => void
+  completeSchedule: (id: string, operator: string) => void
+  cancelSchedule: (id: string, operator: string, reason: string) => void
   updateFermenter: (id: string, data: Partial<Fermenter>) => void
   addSchedule: (schedule: Schedule) => void
   updateSchedule: (id: string, data: Partial<Schedule>) => void
@@ -85,6 +92,13 @@ interface AppState {
   }) => { hasConflict: boolean; conflicts: string[] }
   syncScheduleToDevice: (scheduleId: string) => void
   releaseDeviceFromSchedule: (scheduleId: string) => void
+  requestRecheck: (testId: string, applicant: string, reason: string) => void
+  submitRecheckResult: (originalTestId: string, recheckTest: QualityTest) => void
+  disposeQuality: (testId: string, disposal: 'release' | 'degrade' | 'discard' | 'rework', operator: string, remark?: string) => void
+  createStockCheckOrder: (warehouse: string, creator: string) => StockCheckOrder
+  updateStockCheckItem: (orderId: string, itemId: string, actualQuantity: number, remark?: string) => void
+  completeStockCheck: (orderId: string, checker: string) => void
+  adjustStockByCheck: (orderId: string, adjustor: string) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -103,6 +117,182 @@ export const useAppStore = create<AppState>((set, get) => ({
   users: mockUsers,
   currentUser: mockCurrentUser,
   stockRecords: [],
+  stockCheckOrders: [],
+
+  initSyncSchedulesToDevice: () =>
+    set((state) => {
+      const fermenterMap: Record<string, Fermenter> = {}
+      state.fermenters.forEach((f) => {
+        fermenterMap[f.id] = { ...f }
+      })
+      const distillerMap: Record<string, Distiller> = {}
+      state.distillers.forEach((d) => {
+        distillerMap[d.id] = { ...d }
+      })
+
+      state.schedules.forEach((s) => {
+        if (s.status === 'approved' || s.status === 'executing') {
+          if (fermenterMap[s.fermenterId]) {
+            fermenterMap[s.fermenterId] = {
+              ...fermenterMap[s.fermenterId],
+              batchNo: s.batchNo,
+              recipe: s.recipeName,
+              expectedEndTime: s.endTime,
+              startTime: s.startTime,
+              status:
+                fermenterMap[s.fermenterId].status === 'idle' || fermenterMap[s.fermenterId].status === 'cleaning'
+                  ? 'running'
+                  : fermenterMap[s.fermenterId].status,
+            }
+          }
+          if (s.distillerId && distillerMap[s.distillerId]) {
+            distillerMap[s.distillerId] = {
+              ...distillerMap[s.distillerId],
+              batchNo: s.batchNo,
+              status:
+                distillerMap[s.distillerId].status === 'idle' || distillerMap[s.distillerId].status === 'cleaning'
+                  ? 'running'
+                  : distillerMap[s.distillerId].status,
+            }
+          }
+        }
+      })
+
+      return {
+        fermenters: Object.values(fermenterMap),
+        distillers: Object.values(distillerMap),
+      }
+    }),
+
+  startSchedule: (id, operator) =>
+    set((state) => {
+      const schedule = state.schedules.find((s) => s.id === id)
+      if (!schedule || schedule.status !== 'approved') return state
+      const now = dayjs().format('YYYY-MM-DD HH:mm')
+      const updatedSchedules = state.schedules.map((s) =>
+        s.id === id ? { ...s, status: 'executing' as const, executeTime: now, operator } : s,
+      )
+
+      const fermenterMap: Record<string, Fermenter> = {}
+      state.fermenters.forEach((f) => {
+        fermenterMap[f.id] = { ...f }
+      })
+      if (fermenterMap[schedule.fermenterId]) {
+        fermenterMap[schedule.fermenterId] = {
+          ...fermenterMap[schedule.fermenterId],
+          batchNo: schedule.batchNo,
+          recipe: schedule.recipeName,
+          expectedEndTime: schedule.endTime,
+          startTime: now,
+          status:
+            fermenterMap[schedule.fermenterId].status === 'idle' || fermenterMap[schedule.fermenterId].status === 'cleaning'
+              ? 'running'
+              : fermenterMap[schedule.fermenterId].status,
+        }
+      }
+      const distillerMap: Record<string, Distiller> = {}
+      state.distillers.forEach((d) => {
+        distillerMap[d.id] = { ...d }
+      })
+      if (schedule.distillerId && distillerMap[schedule.distillerId]) {
+        distillerMap[schedule.distillerId] = {
+          ...distillerMap[schedule.distillerId],
+          batchNo: schedule.batchNo,
+          status:
+            distillerMap[schedule.distillerId].status === 'idle' || distillerMap[schedule.distillerId].status === 'cleaning'
+              ? 'running'
+              : distillerMap[schedule.distillerId].status,
+        }
+      }
+
+      return {
+        schedules: updatedSchedules,
+        fermenters: Object.values(fermenterMap),
+        distillers: Object.values(distillerMap),
+      }
+    }),
+
+  completeSchedule: (id, operator) =>
+    set((state) => {
+      const schedule = state.schedules.find((s) => s.id === id)
+      if (!schedule || (schedule.status !== 'approved' && schedule.status !== 'executing')) return state
+      const now = dayjs().format('YYYY-MM-DD HH:mm')
+
+      const fermenterMap: Record<string, Fermenter> = {}
+      state.fermenters.forEach((f) => {
+        fermenterMap[f.id] = { ...f }
+      })
+      if (fermenterMap[schedule.fermenterId]) {
+        fermenterMap[schedule.fermenterId] = {
+          ...fermenterMap[schedule.fermenterId],
+          batchNo: undefined,
+          recipe: undefined,
+          expectedEndTime: undefined,
+          startTime: undefined,
+          status: 'cleaning' as const,
+        }
+      }
+      const distillerMap: Record<string, Distiller> = {}
+      state.distillers.forEach((d) => {
+        distillerMap[d.id] = { ...d }
+      })
+      if (schedule.distillerId && distillerMap[schedule.distillerId]) {
+        distillerMap[schedule.distillerId] = {
+          ...distillerMap[schedule.distillerId],
+          batchNo: undefined,
+          status: 'idle' as const,
+        }
+      }
+
+      return {
+        schedules: state.schedules.map((s) =>
+          s.id === id ? { ...s, status: 'completed' as const, completeTime: now } : s,
+        ),
+        fermenters: Object.values(fermenterMap),
+        distillers: Object.values(distillerMap),
+      }
+    }),
+
+  cancelSchedule: (id, operator, reason) =>
+    set((state) => {
+      const schedule = state.schedules.find((s) => s.id === id)
+      if (!schedule || (schedule.status !== 'approved' && schedule.status !== 'executing')) return state
+      const now = dayjs().format('YYYY-MM-DD HH:mm')
+
+      const fermenterMap: Record<string, Fermenter> = {}
+      state.fermenters.forEach((f) => {
+        fermenterMap[f.id] = { ...f }
+      })
+      if (fermenterMap[schedule.fermenterId]) {
+        fermenterMap[schedule.fermenterId] = {
+          ...fermenterMap[schedule.fermenterId],
+          batchNo: undefined,
+          recipe: undefined,
+          expectedEndTime: undefined,
+          startTime: undefined,
+          status: 'idle' as const,
+        }
+      }
+      const distillerMap: Record<string, Distiller> = {}
+      state.distillers.forEach((d) => {
+        distillerMap[d.id] = { ...d }
+      })
+      if (schedule.distillerId && distillerMap[schedule.distillerId]) {
+        distillerMap[schedule.distillerId] = {
+          ...distillerMap[schedule.distillerId],
+          batchNo: undefined,
+          status: 'idle' as const,
+        }
+      }
+
+      return {
+        schedules: state.schedules.map((s) =>
+          s.id === id ? { ...s, status: 'cancelled' as const, cancelTime: now, cancelReason: reason } : s,
+        ),
+        fermenters: Object.values(fermenterMap),
+        distillers: Object.values(distillerMap),
+      }
+    }),
 
   getRawMaterial: (id) => get().rawMaterials.find((m) => m.id === id),
   getSparePart: (id) => get().spareParts.find((p) => p.id === id),
@@ -749,5 +939,223 @@ export const useAppStore = create<AppState>((set, get) => ({
         alarms: [...newAlarms, ...state.alarms],
       }
     })
+  },
+
+  requestRecheck: (testId, applicant, reason) =>
+    set((state) => {
+      const now = dayjs().format('YYYY-MM-DD HH:mm')
+      return {
+        qualityTests: state.qualityTests.map((t) =>
+          t.id === testId
+            ? {
+                ...t,
+                recheckRequestTime: now,
+                recheckApplicant: applicant,
+                recheckReason: reason,
+              }
+            : t,
+        ),
+      }
+    }),
+
+  submitRecheckResult: (originalTestId, recheckTest) =>
+    set((state) => ({
+      qualityTests: [recheckTest, ...state.qualityTests.map((t) =>
+        t.id === originalTestId ? { ...t, overallResult: 'recheck' as const } : t,
+      )],
+    })),
+
+  disposeQuality: (testId, disposal, operator, remark) =>
+    set((state) => {
+      const now = dayjs().format('YYYY-MM-DD HH:mm')
+      return {
+        qualityTests: state.qualityTests.map((t) =>
+          t.id === testId
+            ? {
+                ...t,
+                disposal,
+                disposalTime: now,
+                disposalOperator: operator,
+                disposalRemark: remark,
+              }
+            : t,
+        ),
+      }
+    }),
+
+  createStockCheckOrder: (warehouse, creator) => {
+    const now = dayjs().format('YYYY-MM-DD HH:mm')
+    const orderId = `SC${Date.now()}`
+    const orderNo = `PD${dayjs().format('YYYYMMDDHHmmss')}`
+    const state = get()
+
+    const items: StockCheckItem[] = []
+    state.rawMaterials
+      .filter((m) => m.warehouse === warehouse)
+      .forEach((m) => {
+        items.push({
+          id: `SCI${Date.now()}-${m.id}`,
+          materialType: 'raw' as const,
+          materialId: m.id,
+          materialName: m.name,
+          unit: m.unit,
+          warehouse,
+          bookQuantity: m.quantity,
+        })
+      })
+    state.spareParts
+      .filter((p) => p.location === warehouse)
+      .forEach((p) => {
+        items.push({
+          id: `SCI${Date.now()}-${p.id}`,
+          materialType: 'spare' as const,
+          materialId: p.id,
+          materialName: p.name,
+          unit: p.unit,
+          warehouse,
+          bookQuantity: p.quantity,
+        })
+      })
+
+    const newOrder: StockCheckOrder = {
+      id: orderId,
+      orderNo,
+      warehouse,
+      status: 'draft' as const,
+      createTime: now,
+      creator,
+      items,
+    }
+    set((state) => ({
+      stockCheckOrders: [newOrder, ...state.stockCheckOrders],
+    }))
+    return newOrder
+  },
+
+  updateStockCheckItem: (orderId, itemId, actualQuantity, remark) =>
+    set((state) => ({
+      stockCheckOrders: state.stockCheckOrders.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              items: o.items.map((it) =>
+                it.id === itemId
+                  ? {
+                      ...it,
+                      actualQuantity,
+                      diffQuantity: actualQuantity - it.bookQuantity,
+                      diffType:
+                        actualQuantity > it.bookQuantity
+                          ? 'surplus'
+                          : actualQuantity < it.bookQuantity
+                          ? 'loss'
+                          : 'none',
+                      remark: remark || it.remark,
+                    }
+                  : it,
+              ),
+            }
+          : o,
+      ),
+    })),
+
+  completeStockCheck: (orderId, checker) =>
+    set((state) => {
+      const now = dayjs().format('YYYY-MM-DD HH:mm')
+      return {
+        stockCheckOrders: state.stockCheckOrders.map((o) => {
+          if (o.id !== orderId) return o
+          let totalSurplus = 0
+          let totalLoss = 0
+          o.items.forEach((it) => {
+            if (it.diffType === 'surplus' && it.diffQuantity) totalSurplus += it.diffQuantity
+            if (it.diffType === 'loss' && it.diffQuantity) totalLoss += Math.abs(it.diffQuantity)
+          })
+          return {
+            ...o,
+            status: 'completed' as const,
+            checkTime: now,
+            checker,
+            totalSurplus,
+            totalLoss,
+          }
+        }),
+      }
+    }),
+
+  adjustStockByCheck: (orderId, adjustor) => {
+    const now = dayjs().format('YYYY-MM-DD HH:mm')
+    const state = get()
+    const order = state.stockCheckOrders.find((o) => o.id === orderId)
+    if (!order) return
+
+    let updatedRaw = [...state.rawMaterials]
+    let updatedSpare = [...state.spareParts]
+    let updatedAging = [...state.agingWarehouses]
+    const newRecords: StockRecord[] = []
+
+    order.items.forEach((it) => {
+      if (it.actualQuantity === undefined || it.diffQuantity === 0 || !it.diffQuantity) return
+      const diff = it.diffQuantity!
+      const absDiff = Math.abs(diff)
+
+      if (it.materialType === 'raw') {
+        const idx = updatedRaw.findIndex((m) => m.id === it.materialId)
+        if (idx !== -1) {
+          updatedRaw[idx] = {
+            ...updatedRaw[idx],
+            quantity: it.actualQuantity!,
+            lastUpdate: now,
+          }
+        }
+      } else if (it.materialType === 'spare') {
+        const idx = updatedSpare.findIndex((p) => p.id === it.materialId)
+        if (idx !== -1) {
+          updatedSpare[idx] = {
+            ...updatedSpare[idx],
+            quantity: it.actualQuantity!,
+            lastUpdate: now,
+          }
+        }
+      } else if (it.materialType === 'aging') {
+        const idx = updatedAging.findIndex((w) => w.id === it.materialId)
+        if (idx !== -1) {
+          updatedAging[idx] = {
+            ...updatedAging[idx],
+            usedCapacity: it.actualQuantity!,
+          }
+        }
+      }
+
+      newRecords.push({
+        id: `SR${Date.now()}-${it.id}`,
+        type: diff > 0 ? 'adjust_in' : 'adjust_out',
+        materialType: it.materialType,
+        materialId: it.materialId,
+        materialName: it.materialName,
+        unit: it.unit,
+        quantity: absDiff,
+        relatedOrderId: order.id,
+        relatedOrderNo: order.orderNo,
+        operator: adjustor,
+        time: now,
+        remark: `盘点${diff > 0 ? '盘盈' : '盘亏'}调整`,
+        bookQuantity: it.bookQuantity,
+        actualQuantity: it.actualQuantity,
+        diffQuantity: diff,
+      })
+    })
+
+    set((state) => ({
+      rawMaterials: updatedRaw,
+      spareParts: updatedSpare,
+      agingWarehouses: updatedAging,
+      stockRecords: [...newRecords, ...state.stockRecords],
+      stockCheckOrders: state.stockCheckOrders.map((o) =>
+        o.id === orderId
+          ? { ...o, status: 'adjusted' as const, adjustTime: now, adjustor }
+          : o,
+      ),
+    }))
   },
 }))

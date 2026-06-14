@@ -89,26 +89,163 @@ const BatchTracking: React.FC = () => {
     return tests.length > 0 ? tests[tests.length - 1] : null
   }
 
-  const finalDisposition = (() => {
-    if (batchTests.length === 0) return { text: '未检测', color: 'default' }
-    const last = batchTests[batchTests.length - 1]
-    if (last.overallResult === 'pass') return { text: '合格流转/入库', color: 'green' }
-    if (last.overallResult === 'recheck') return { text: '待复检', color: 'orange' }
-    if (last.overallResult === 'degraded') return { text: '降级处理', color: 'gold' }
-    if (last.overallResult === 'fail') return { text: '不合格-待处理', color: 'red' }
-    return { text: getResultText(last.overallResult), color: getResultColor(last.overallResult) }
-  })()
+  interface TimelineNode {
+    key: string
+    time: string
+    color: string
+    title: string
+    type: 'test' | 'recheckRequest' | 'disposal'
+    test?: QualityTest
+    extra?: Record<string, any>
+  }
 
-  const timelineItems = batchTests.map((test, idx) => {
-    const stageName = STAGE_NAMES[test.stage] || test.stage
-    const isRecheck = test.remark?.includes('复检')
+  const buildTimelineNodes = (): TimelineNode[] => {
+    const nodes: TimelineNode[] = []
+    batchTests.forEach((t) => {
+      if (!t.isRecheck) {
+        nodes.push({
+          key: `t-${t.id}`,
+          time: t.testTime,
+          color: STAGE_COLORS[t.stage] || '#8c8c8c',
+          title: `${STAGE_NAMES[t.stage]}初检`,
+          type: 'test',
+          test: t,
+        })
+        if (t.recheckRequestTime) {
+          nodes.push({
+            key: `rr-${t.id}`,
+            time: t.recheckRequestTime,
+            color: '#fa8c16',
+            title: `${STAGE_NAMES[t.stage]}复检申请`,
+            type: 'recheckRequest',
+            test: t,
+            extra: {
+              applicant: t.recheckApplicant,
+              reason: t.recheckReason,
+            },
+          })
+        }
+      }
+    })
+    batchTests.forEach((t) => {
+      if (t.isRecheck) {
+        nodes.push({
+          key: `t-${t.id}`,
+          time: t.testTime,
+          color: '#722ed1',
+          title: `${STAGE_NAMES[t.stage]}复检结果`,
+          type: 'test',
+          test: t,
+        })
+      }
+    })
+    batchTests.forEach((t) => {
+      if (t.disposal && t.disposalTime) {
+        nodes.push({
+          key: `d-${t.id}`,
+          time: t.disposalTime,
+          color:
+            t.disposal === 'release'
+              ? '#52c41a'
+              : t.disposal === 'degrade'
+              ? '#faad14'
+              : t.disposal === 'discard'
+              ? '#f5222d'
+              : '#1677ff',
+          title: `最终处置 - ${
+            t.disposal === 'release'
+              ? '放行'
+              : t.disposal === 'degrade'
+              ? '降级'
+              : t.disposal === 'discard'
+              ? '报废'
+              : '返工'
+          }`,
+          type: 'disposal',
+          test: t,
+          extra: {
+            operator: t.disposalOperator,
+            remark: t.disposalRemark,
+          },
+        })
+      }
+    })
+    nodes.sort((a, b) => a.time.localeCompare(b.time))
+    return nodes
+  }
+
+  const timelineNodes = buildTimelineNodes()
+
+  const timelineItems = timelineNodes.map((node) => {
+    if (node.type === 'recheckRequest') {
+      return {
+        color: node.color,
+        dot: <ReloadOutlined />,
+        children: (
+          <div>
+            <Space>
+              <strong style={{ fontSize: 14 }}>{node.title}</strong>
+              <Tag color="orange">申请复检</Tag>
+            </Space>
+            <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 4 }}>
+              {node.time} · 申请人: {node.extra?.applicant || '-'}
+            </div>
+            {node.extra?.reason && (
+              <div style={{ marginTop: 6, fontSize: 12 }}>
+                <strong>申请原因: </strong>
+                {node.extra.reason}
+              </div>
+            )}
+          </div>
+        ),
+      }
+    }
+    if (node.type === 'disposal') {
+      const disp = node.test?.disposal || ''
+      const colorMap: Record<string, string> = {
+        release: 'green',
+        degrade: 'gold',
+        discard: 'red',
+        rework: 'orange',
+      }
+      const textMap: Record<string, string> = {
+        release: '放行',
+        degrade: '降级',
+        discard: '报废',
+        rework: '返工',
+      }
+      return {
+        color: node.color,
+        dot: node.test?.disposal === 'release' ? <CheckCircleOutlined /> : <ArrowDownOutlined />,
+        children: (
+          <div>
+            <Space>
+              <strong style={{ fontSize: 14 }}>{node.title}</strong>
+              <Tag color={colorMap[disp]}>{textMap[disp]}</Tag>
+              <Tag color="purple">最终处置</Tag>
+            </Space>
+            <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 4 }}>
+              {node.time} · 处置人: {node.extra?.operator || '-'}
+            </div>
+            {node.extra?.remark && (
+              <div style={{ marginTop: 6, fontSize: 12 }}>
+                <strong>处置备注: </strong>
+                {node.extra.remark}
+              </div>
+            )}
+          </div>
+        ),
+      }
+    }
+    const test = node.test!
     return {
-      color: STAGE_COLORS[test.stage] || '#8c8c8c',
+      color: node.color,
       children: (
         <div>
           <Space>
-            <strong style={{ fontSize: 14 }}>{stageName}</strong>
-            {isRecheck && <Tag color="orange">复检</Tag>}
+            <strong style={{ fontSize: 14 }}>{node.title}</strong>
+            {test.isRecheck && <Tag color="purple">复检</Tag>}
+            {!test.isRecheck && <Tag color="blue">初检</Tag>}
             <Tag color={getResultColor(test.overallResult)}>{getResultText(test.overallResult)}</Tag>
           </Space>
           <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 4 }}>
@@ -132,14 +269,12 @@ const BatchTracking: React.FC = () => {
                 </List.Item>
               )}
             />
-            {test.items.length > 2 && (
-              <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => {
-                setSelectedTest(test)
-                setDetailVisible(true)
-              }}>
-                查看全部 {test.items.length} 项明细
-              </Button>
-            )}
+            <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => {
+              setSelectedTest(test)
+              setDetailVisible(true)
+            }}>
+              查看全部 {test.items.length} 项明细
+            </Button>
           </div>
           {test.remark && (
             <div style={{ marginTop: 6, fontSize: 12, color: '#8c8c8c' }}>
@@ -150,6 +285,34 @@ const BatchTracking: React.FC = () => {
       ),
     }
   })
+
+  const finalDisposition = (() => {
+    if (timelineNodes.length === 0) return { text: '未检测', color: 'default' }
+    const disposal = timelineNodes.filter((n) => n.type === 'disposal').slice(-1)[0]
+    if (disposal) {
+      const disp = disposal.test?.disposal || ''
+      const colorMap: Record<string, string> = {
+        release: 'green',
+        degrade: 'gold',
+        discard: 'red',
+        rework: 'orange',
+      }
+      const textMap: Record<string, string> = {
+        release: '放行',
+        degrade: '降级',
+        discard: '报废',
+        rework: '返工',
+      }
+      return { text: textMap[disp] || disp, color: colorMap[disp] || 'default' }
+    }
+    const last = batchTests[batchTests.length - 1]
+    if (!last) return { text: '未检测', color: 'default' }
+    if (last.overallResult === 'pass') return { text: '合格，待处置', color: 'green' }
+    if (last.overallResult === 'recheck') return { text: '待复检', color: 'orange' }
+    if (last.overallResult === 'degraded') return { text: '降级处理', color: 'gold' }
+    if (last.overallResult === 'fail') return { text: '不合格-待处理', color: 'red' }
+    return { text: getResultText(last.overallResult), color: getResultColor(last.overallResult) }
+  })()
 
   const columns = [
     {

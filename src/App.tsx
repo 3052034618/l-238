@@ -15,6 +15,7 @@ import {
   DatabaseOutlined,
   SearchOutlined,
   FileTextOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from './store/useAppStore'
 import Dashboard from './pages/Dashboard'
@@ -27,6 +28,7 @@ import WorkshopVisualization from './pages/WorkshopVisualization'
 import Inventory from './pages/Inventory'
 import BatchTracking from './pages/BatchTracking'
 import StockRecords from './pages/StockRecords'
+import StockCheck from './pages/StockCheck'
 import { useState } from 'react'
 
 const { Header, Sider, Content } = Layout
@@ -52,6 +54,7 @@ const menuItems = [
     children: [
       { key: '/inventory', icon: <DatabaseOutlined />, label: '库存总览' },
       { key: '/stock-records', icon: <FileTextOutlined />, label: '库存流水记录' },
+      { key: '/stock-check', icon: <FileSearchOutlined />, label: '库存盘点' },
     ],
   },
   { key: '/statistics', icon: <BarChartOutlined />, label: '统计报表' },
@@ -169,6 +172,7 @@ function App() {
             <Route path="/maintenance" element={<Maintenance />} />
             <Route path="/inventory" element={<Inventory />} />
             <Route path="/stock-records" element={<StockRecords />} />
+            <Route path="/stock-check" element={<StockCheck />} />
             <Route path="/statistics" element={<Statistics />} />
             <Route path="/visualization" element={<WorkshopVisualization />} />
           </Routes>

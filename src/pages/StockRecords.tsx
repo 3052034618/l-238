@@ -19,6 +19,8 @@ import {
   InboxOutlined,
   ExportOutlined,
   ToolOutlined,
+  RiseOutlined,
+  FallOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from '../store/useAppStore'
 import type { StockRecord } from '../types'
@@ -31,6 +33,8 @@ const TYPE_META: Record<string, { text: string; color: string; icon: any }> = {
   in: { text: '入库', color: 'green', icon: InboxOutlined },
   out: { text: '出库', color: 'blue', icon: ExportOutlined },
   maintenance: { text: '维保领用', color: 'orange', icon: ToolOutlined },
+  adjust_in: { text: '盘盈调整', color: '#52c41a', icon: RiseOutlined },
+  adjust_out: { text: '盘亏调整', color: '#faad14', icon: FallOutlined },
 }
 
 const MATERIAL_TYPE_META: Record<string, { text: string; color: string }> = {
@@ -71,7 +75,9 @@ const StockRecords: React.FC = () => {
           r.materialName.toLowerCase().includes(kw) ||
           r.operator.toLowerCase().includes(kw) ||
           (r.batchNo && r.batchNo.toLowerCase().includes(kw)) ||
-          (r.remark && r.remark.toLowerCase().includes(kw)),
+          (r.remark && r.remark.toLowerCase().includes(kw)) ||
+          (r.relatedOrderId && r.relatedOrderId.toLowerCase().includes(kw)) ||
+          (r.relatedOrderNo && r.relatedOrderNo.toLowerCase().includes(kw)),
       )
     }
     return result
@@ -95,7 +101,38 @@ const StockRecords: React.FC = () => {
       message.warning('暂无数据可导出')
       return
     }
-    const headers = ['流水号', '类型', '物料分类', '物料名称', '数量', '单位', '批次号', '关联单号', '操作人', '时间', '备注']
+    const filters: string[] = []
+    if (filterType) filters.push(`类型=${TYPE_META[filterType]?.text || filterType}`)
+    if (filterMaterialType) filters.push(`分类=${MATERIAL_TYPE_META[filterMaterialType]?.text || filterMaterialType}`)
+    if (filterMaterialId) {
+      const mat = materialOptions.find((m) => m.id === filterMaterialId)
+      filters.push(`物料=${mat?.name || filterMaterialId}`)
+    }
+    if (filterDateRange && filterDateRange[0] && filterDateRange[1]) {
+      filters.push(`时间=${filterDateRange[0].format('YYYY-MM-DD')}至${filterDateRange[1].format('YYYY-MM-DD')}`)
+    }
+    if (searchText.trim()) filters.push(`关键词=${searchText.trim()}`)
+    const filterStr = filters.length > 0 ? filters.join('_') : '全部'
+    const checkNos = Array.from(new Set(filteredRecords.filter((r) => r.relatedOrderNo).map((r) => r.relatedOrderNo!)))
+    const checkNoStr = checkNos.length > 0 ? `_盘点单${checkNos.join('-')}` : ''
+
+    const headers = [
+      '流水号',
+      '类型',
+      '物料分类',
+      '物料名称',
+      '数量',
+      '单位',
+      '账存数',
+      '实盘数',
+      '盈亏',
+      '批次号',
+      '关联单号',
+      '盘点单号',
+      '操作人',
+      '时间',
+      '备注',
+    ]
     const rows = filteredRecords.map((r) => [
       r.id,
       TYPE_META[r.type]?.text || r.type,
@@ -103,18 +140,23 @@ const StockRecords: React.FC = () => {
       r.materialName,
       r.quantity.toString(),
       r.unit,
+      r.bookQuantity?.toString() || '',
+      r.actualQuantity?.toString() || '',
+      r.diffQuantity !== undefined ? r.diffQuantity.toString() : '',
       r.batchNo || '',
       r.relatedOrderId || '',
+      r.relatedOrderNo || '',
       r.operator,
       r.time,
       r.remark || '',
     ])
-    const csv = [headers, ...rows].map((row) => row.map((c) => `"${c}"`).join(',')).join('\n')
+    const filterRow = [`筛选条件: ${filterStr}`, '', '', '', '', '', '', '', '', '', '', '', '', '', '']
+    const csv = [headers, filterRow, ...rows].map((row) => row.map((c) => `"${c}"`).join(',')).join('\n')
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `库存流水_${dayjs().format('YYYYMMDD_HHmm')}.csv`
+    link.download = `库存流水_${filterStr}${checkNoStr}_${dayjs().format('YYYYMMDD_HHmm')}.csv`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -163,25 +205,68 @@ const StockRecords: React.FC = () => {
       key: 'quantity',
       width: 100,
       align: 'right' as const,
-      render: (q: number, r: StockRecord) => (
-        <span style={{ fontWeight: 600, color: r.type === 'in' ? '#52c41a' : '#cf1322' }}>
-          {r.type === 'in' ? '+' : '-'}
-          {q.toLocaleString()} {r.unit}
-        </span>
-      ),
+      render: (q: number, r: StockRecord) => {
+        const isPlus = r.type === 'in' || r.type === 'adjust_in'
+        return (
+          <span style={{ fontWeight: 600, color: isPlus ? '#52c41a' : '#cf1322' }}>
+            {isPlus ? '+' : '-'}
+            {q.toLocaleString()} {r.unit}
+          </span>
+        )
+      },
+    },
+    {
+      title: '账存',
+      dataIndex: 'bookQuantity',
+      key: 'bookQuantity',
+      width: 90,
+      align: 'right' as const,
+      render: (v?: number) => (v !== undefined ? v.toLocaleString() : '-'),
+    },
+    {
+      title: '实盘',
+      dataIndex: 'actualQuantity',
+      key: 'actualQuantity',
+      width: 90,
+      align: 'right' as const,
+      render: (v?: number) => (v !== undefined ? v.toLocaleString() : '-'),
+    },
+    {
+      title: '盈亏',
+      dataIndex: 'diffQuantity',
+      key: 'diffQuantity',
+      width: 90,
+      align: 'right' as const,
+      render: (v?: number) => {
+        if (v === undefined) return '-'
+        const color = v > 0 ? '#52c41a' : v < 0 ? '#cf1322' : '#595959'
+        return (
+          <span style={{ color, fontWeight: 500 }}>
+            {v > 0 ? '+' : ''}
+            {v.toLocaleString()}
+          </span>
+        )
+      },
     },
     {
       title: '批次号',
       dataIndex: 'batchNo',
       key: 'batchNo',
-      width: 140,
+      width: 130,
       render: (t?: string) => t || '-',
+    },
+    {
+      title: '盘点单号',
+      dataIndex: 'relatedOrderNo',
+      key: 'relatedOrderNo',
+      width: 140,
+      render: (t?: string) => (t ? <Tag color="purple">{t}</Tag> : '-'),
     },
     {
       title: '关联单号',
       dataIndex: 'relatedOrderId',
       key: 'relatedOrderId',
-      width: 140,
+      width: 130,
       render: (t?: string) => t || '-',
     },
     {
@@ -207,8 +292,10 @@ const StockRecords: React.FC = () => {
     },
   ]
 
-  const totalIn = filteredRecords.filter((r) => r.type === 'in').reduce((s, r) => s + r.quantity, 0)
-  const totalOut = filteredRecords.filter((r) => r.type === 'out' || r.type === 'maintenance').reduce((s, r) => s + r.quantity, 0)
+  const totalIn = filteredRecords.filter((r) => r.type === 'in' || r.type === 'adjust_in').reduce((s, r) => s + r.quantity, 0)
+  const totalOut = filteredRecords
+    .filter((r) => r.type === 'out' || r.type === 'maintenance' || r.type === 'adjust_out')
+    .reduce((s, r) => s + r.quantity, 0)
 
   return (
     <div className="page-container">
@@ -259,6 +346,8 @@ const StockRecords: React.FC = () => {
               <Option value="in">入库</Option>
               <Option value="out">出库</Option>
               <Option value="maintenance">维保领用</Option>
+              <Option value="adjust_in">盘盈调整</Option>
+              <Option value="adjust_out">盘亏调整</Option>
             </Select>
             <Select
               style={{ width: 130 }}
@@ -292,8 +381,8 @@ const StockRecords: React.FC = () => {
               placeholder={['开始日期', '结束日期']}
             />
             <Input
-              style={{ width: 180 }}
-              placeholder="搜索物料/操作人/批次"
+              style={{ width: 220 }}
+              placeholder="搜索物料/操作人/批次/盘点单号"
               prefix={<SearchOutlined />}
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
@@ -318,7 +407,7 @@ const StockRecords: React.FC = () => {
             dataSource={filteredRecords}
             rowKey="id"
             pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-            scroll={{ x: 1300 }}
+            scroll={{ x: 1800 }}
           />
         )}
       </Card>

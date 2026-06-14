@@ -77,7 +77,7 @@ export interface Schedule {
   distillerName?: string
   startTime: string
   endTime: string
-  status: 'pending' | 'approved' | 'rejected' | 'adjusting' | 'executing' | 'completed'
+  status: 'pending' | 'approved' | 'rejected' | 'adjusting' | 'executing' | 'completed' | 'cancelled'
   operator?: string
   approver?: string
   approveTime?: string
@@ -94,10 +94,14 @@ export interface Schedule {
     distillerName?: string
     startTime: string
     endTime: string
-    status: 'pending' | 'approved' | 'rejected' | 'adjusting' | 'executing' | 'completed'
+    status: 'pending' | 'approved' | 'rejected' | 'adjusting' | 'executing' | 'completed' | 'cancelled'
   }
   adjustRejected?: boolean
   adjustRejectRemark?: string
+  executeTime?: string
+  completeTime?: string
+  cancelTime?: string
+  cancelReason?: string
 }
 
 export interface AlarmRecord {
@@ -132,6 +136,15 @@ export interface QualityTest {
   overallResult: 'pass' | 'fail' | 'recheck' | 'degraded'
   stage: 'fermentation' | 'distillation' | 'aging'
   remark?: string
+  isRecheck?: boolean
+  recheckOfId?: string
+  recheckRequestTime?: string
+  recheckApplicant?: string
+  recheckReason?: string
+  disposal?: 'release' | 'degrade' | 'discard' | 'rework'
+  disposalTime?: string
+  disposalOperator?: string
+  disposalRemark?: string
 }
 
 export interface MaintenanceOrder {
@@ -197,7 +210,7 @@ export interface User {
   avatar?: string
 }
 
-export type StockRecordType = 'in' | 'out' | 'maintenance'
+export type StockRecordType = 'in' | 'out' | 'maintenance' | 'adjust_in' | 'adjust_out'
 
 export interface StockRecord {
   id: string
@@ -209,7 +222,42 @@ export interface StockRecord {
   quantity: number
   batchNo?: string
   relatedOrderId?: string
+  relatedOrderNo?: string
   operator: string
   time: string
+  remark?: string
+  bookQuantity?: number
+  actualQuantity?: number
+  diffQuantity?: number
+}
+
+export interface StockCheckItem {
+  id: string
+  materialType: 'raw' | 'spare' | 'aging'
+  materialId: string
+  materialName: string
+  unit: string
+  warehouse: string
+  bookQuantity: number
+  actualQuantity?: number
+  diffQuantity?: number
+  diffType?: 'surplus' | 'loss' | 'none'
+  remark?: string
+}
+
+export interface StockCheckOrder {
+  id: string
+  orderNo: string
+  warehouse: string
+  status: 'draft' | 'checking' | 'completed' | 'adjusted'
+  createTime: string
+  creator: string
+  checkTime?: string
+  checker?: string
+  adjustTime?: string
+  adjustor?: string
+  items: StockCheckItem[]
+  totalSurplus?: number
+  totalLoss?: number
   remark?: string
 }

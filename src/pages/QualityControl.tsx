@@ -9,6 +9,7 @@ import {
   Form,
   Select,
   InputNumber,
+  Input,
   message,
   Row,
   Col,
@@ -94,14 +95,23 @@ const QualityControl: React.FC = () => {
   const recipes = useAppStore((state) => state.recipes)
   const addQualityTest = useAppStore((state) => state.addQualityTest)
   const updateQualityTest = useAppStore((state) => state.updateQualityTest)
+  const requestRecheck = useAppStore((state) => state.requestRecheck)
+  const submitRecheckResult = useAppStore((state) => state.submitRecheckResult)
+  const disposeQuality = useAppStore((state) => state.disposeQuality)
   const batchRecords = useAppStore((state) => state.batchRecords)
   const currentUser = useAppStore((state) => state.currentUser)
 
   const [isModalVisible, setIsModalVisible] = useState(false)
   const [isRecheckModalVisible, setIsRecheckModalVisible] = useState(false)
   const [isDetailVisible, setIsDetailVisible] = useState(false)
+  const [isRequestRecheckVisible, setIsRequestRecheckVisible] = useState(false)
+  const [isDisposeVisible, setIsDisposeVisible] = useState(false)
   const [currentTest, setCurrentTest] = useState<QualityTest | null>(null)
   const [recheckTest, setRecheckTest] = useState<QualityTest | null>(null)
+  const [disposeTest, setDisposeTest] = useState<QualityTest | null>(null)
+  const [requestRecheckReason, setRequestRecheckReason] = useState('')
+  const [disposalRemark, setDisposalRemark] = useState('')
+  const [disposalType, setDisposalType] = useState<'release' | 'degrade' | 'discard' | 'rework'>('release')
   const [modalStage, setModalStage] = useState<Stage>('fermentation')
   const [form] = Form.useForm()
   const [recheckForm] = Form.useForm()
@@ -152,21 +162,23 @@ const QualityControl: React.FC = () => {
   }
 
   const handleRequestRecheck = (test: QualityTest) => {
-    Modal.confirm({
-      title: '申请复检',
-      content: `确定对批次 ${test.batchNo} 申请复检吗？申请后状态将变为"待复检"，等待复检完成。`,
-      okText: '确认申请复检',
-      cancelText: '取消',
-      onOk: () => {
-        updateQualityTest(test.id, {
-          overallResult: 'recheck',
-        })
-        if (currentTest?.id === test.id) {
-          setCurrentTest({ ...test, overallResult: 'recheck' })
-        }
-        message.success('复检申请已提交，列表状态已更新为待复检')
-      },
-    })
+    setCurrentTest(test)
+    setRequestRecheckReason('')
+    setIsRequestRecheckVisible(true)
+  }
+
+  const handleConfirmRequestRecheck = () => {
+    if (!requestRecheckReason.trim()) {
+      message.warning('请填写复检申请原因')
+      return
+    }
+    if (currentTest) {
+      requestRecheck(currentTest.id, currentUser.name, requestRecheckReason)
+      message.success('复检申请已提交，已记录申请人、申请原因和时间')
+    }
+    setIsRequestRecheckVisible(false)
+    setRequestRecheckReason('')
+    setCurrentTest(null)
   }
 
   const handleOpenRecheck = (test: QualityTest) => {
@@ -183,37 +195,33 @@ const QualityControl: React.FC = () => {
   }
 
   const handleDegrade = (test: QualityTest) => {
-    Modal.confirm({
-      title: '降级处理',
-      content: `确定将批次 ${test.batchNo} 做降级处理吗？`,
-      okText: '确认降级',
-      okType: 'danger',
-      onOk: () => {
-        updateQualityTest(test.id, {
-          overallResult: 'degraded',
-        })
-        if (currentTest?.id === test.id) {
-          setCurrentTest({ ...test, overallResult: 'degraded' })
-        }
-        message.success('已做降级处理')
-      },
-    })
+    handleOpenDispose(test, 'degrade')
+  }
+
+  const handleOpenDispose = (test: QualityTest, defaultType: 'release' | 'degrade' | 'discard' | 'rework' = 'release') => {
+    setDisposeTest(test)
+    setDisposalType(defaultType)
+    setDisposalRemark('')
+    setIsDisposeVisible(true)
+  }
+
+  const handleConfirmDispose = () => {
+    if (!disposeTest) return
+    disposeQuality(disposeTest.id, disposalType, currentUser.name, disposalRemark)
+    const typeText: Record<string, string> = {
+      release: '放行',
+      degrade: '降级',
+      discard: '报废',
+      rework: '返工',
+    }
+    message.success(`批次 ${disposeTest.batchNo} 已完成处置：${typeText[disposalType]}`)
+    setIsDisposeVisible(false)
+    setDisposeTest(null)
+    setDisposalRemark('')
   }
 
   const handlePass = (test: QualityTest) => {
-    Modal.confirm({
-      title: '合格判定',
-      content: `确定批次 ${test.batchNo} 检测合格吗？合格后方可进入下一工序。`,
-      onOk: () => {
-        updateQualityTest(test.id, {
-          overallResult: 'pass',
-        })
-        if (currentTest?.id === test.id) {
-          setCurrentTest({ ...test, overallResult: 'pass' })
-        }
-        message.success('判定为合格，可进入下一工序')
-      },
-    })
+    handleOpenDispose(test, 'release')
   }
 
   const handleSubmit = () => {
@@ -245,24 +253,20 @@ const QualityControl: React.FC = () => {
       const items = buildItems(values, stage)
       const overallPass = items.every((item) => item.result === 'pass')
 
-      updateQualityTest(recheckTest.id, {
-        items,
-        overallResult: overallPass ? 'pass' : 'fail',
+      const newRecheckTest: QualityTest = {
+        id: `QR${Date.now()}`,
+        batchNo: recheckTest.batchNo,
         testTime: dayjs().format('YYYY-MM-DD HH:mm'),
         tester: currentUser.name,
+        stage,
+        items,
+        overallResult: overallPass ? 'pass' : 'fail',
+        isRecheck: true,
+        recheckOfId: recheckTest.id,
         remark: `复检完成 - ${overallPass ? '复检合格' : '复检不合格'}`,
-      })
-      if (currentTest?.id === recheckTest.id) {
-        setCurrentTest({
-          ...recheckTest,
-          items,
-          overallResult: overallPass ? 'pass' : 'fail',
-          testTime: dayjs().format('YYYY-MM-DD HH:mm'),
-          tester: currentUser.name,
-          remark: `复检完成 - ${overallPass ? '复检合格' : '复检不合格'}`,
-        })
       }
-      message.success(overallPass ? '复检完成，判定合格' : '复检完成，仍不合格')
+      submitRecheckResult(recheckTest.id, newRecheckTest)
+      message.success(overallPass ? '复检完成，复检结果已单独记录（原检测保留）' : '复检完成，仍不合格，已单独记录')
       setIsRecheckModalVisible(false)
       setRecheckTest(null)
       recheckForm.resetFields()
@@ -290,10 +294,17 @@ const QualityControl: React.FC = () => {
       render: (stage: string) => getStageText(stage),
     },
     {
+      title: '检测类型',
+      key: 'type',
+      width: 80,
+      render: (_: any, record: QualityTest) =>
+        record.isRecheck ? <Tag color="purple">复检</Tag> : <Tag color="blue">初检</Tag>,
+    },
+    {
       title: '检测项目',
       dataIndex: 'items',
       key: 'items',
-      width: 150,
+      width: 100,
       render: (items: QualityTest['items']) => `${items.length} 项`,
     },
     {
@@ -304,6 +315,22 @@ const QualityControl: React.FC = () => {
       render: (result: string) => <Tag color={getResultColor(result)}>{getResultText(result)}</Tag>,
     },
     {
+      title: '最终处置',
+      key: 'disposal',
+      width: 100,
+      render: (_: any, record: QualityTest) => {
+        if (!record.disposal) return <span style={{ color: '#bfbfbf' }}>-</span>
+        const map: Record<string, { text: string; color: string }> = {
+          release: { text: '放行', color: 'green' },
+          degrade: { text: '降级', color: 'gold' },
+          discard: { text: '报废', color: 'red' },
+          rework: { text: '返工', color: 'orange' },
+        }
+        const m = map[record.disposal]
+        return m ? <Tag color={m.color}>{m.text}</Tag> : <span>{record.disposal}</span>
+      },
+    },
+    {
       title: '检测员',
       dataIndex: 'tester',
       key: 'tester',
@@ -312,29 +339,35 @@ const QualityControl: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 240,
+      width: 360,
       render: (_: any, record: QualityTest) => (
-        <Space size="small">
+        <Space size="small" wrap>
           <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => handleViewDetail(record)}>
             详情
           </Button>
-          {record.overallResult === 'fail' && (
+          {record.overallResult === 'fail' && !record.isRecheck && !record.recheckRequestTime && (
             <Button type="link" size="small" icon={<ReloadOutlined />} onClick={() => handleRequestRecheck(record)}>
               申请复检
             </Button>
           )}
-          {record.overallResult === 'recheck' && (
+          {record.overallResult === 'recheck' && !record.isRecheck && (
             <Button type="primary" size="small" icon={<ReloadOutlined />} onClick={() => handleOpenRecheck(record)}>
               完成复检
             </Button>
           )}
-          {record.overallResult === 'fail' && (
+          {(record.overallResult === 'fail' || (record.overallResult === 'pass' && record.isRecheck)) && !record.disposal && (
             <>
-              <Button type="link" size="small" onClick={() => handlePass(record)}>
-                判合格
+              <Button type="link" size="small" onClick={() => handleOpenDispose(record, 'release')}>
+                放行
               </Button>
-              <Button type="link" size="small" danger icon={<ArrowDownOutlined />} onClick={() => handleDegrade(record)}>
+              <Button type="link" size="small" danger icon={<ArrowDownOutlined />} onClick={() => handleOpenDispose(record, 'degrade')}>
                 降级
+              </Button>
+              <Button type="link" size="small" danger onClick={() => handleOpenDispose(record, 'discard')}>
+                报废
+              </Button>
+              <Button type="link" size="small" onClick={() => handleOpenDispose(record, 'rework')}>
+                返工
               </Button>
             </>
           )}
@@ -742,6 +775,10 @@ const QualityControl: React.FC = () => {
                       <p><strong>批次号：</strong>{latestTest.batchNo}</p>
                       <p><strong>检测阶段：</strong>{getStageText(latestTest.stage)}</p>
                       <p><strong>检测时间：</strong>{latestTest.testTime}</p>
+                      <p>
+                        <strong>检测类型：</strong>
+                        {latestTest.isRecheck ? <Tag color="purple">复检</Tag> : <Tag color="blue">初检</Tag>}
+                      </p>
                     </Col>
                     <Col span={12}>
                       <p><strong>检测员：</strong>{latestTest.tester}</p>
@@ -751,6 +788,23 @@ const QualityControl: React.FC = () => {
                           {getResultText(latestTest.overallResult)}
                         </Tag>
                       </p>
+                      {latestTest.disposal && (
+                        <p>
+                          <strong>最终处置：</strong>
+                          {(() => {
+                            const map: Record<string, { text: string; color: string }> = {
+                              release: { text: '放行', color: 'green' },
+                              degrade: { text: '降级', color: 'gold' },
+                              discard: { text: '报废', color: 'red' },
+                              rework: { text: '返工', color: 'orange' },
+                            }
+                            const m = map[latestTest.disposal!]
+                            return m ? <Tag color={m.color}>{m.text}</Tag> : <span>{latestTest.disposal}</span>
+                          })()}
+                        </p>
+                      )}
+                      {latestTest.disposalOperator && <p><strong>处置人：</strong>{latestTest.disposalOperator}</p>}
+                      {latestTest.disposalTime && <p><strong>处置时间：</strong>{latestTest.disposalTime}</p>}
                     </Col>
                   </Row>
                   <div className="section-title">检测项目明细（按阶段标准判定）</div>
@@ -774,15 +828,131 @@ const QualityControl: React.FC = () => {
                       </List.Item>
                     )}
                   />
+                  {latestTest.recheckRequestTime && (
+                    <div style={{ marginTop: 16, padding: 12, background: '#fff7e6', borderRadius: 4 }}>
+                      <strong>复检申请：</strong>
+                      <div style={{ marginTop: 4, fontSize: 12 }}>
+                        <p>申请人: {latestTest.recheckApplicant} · {latestTest.recheckRequestTime}</p>
+                        {latestTest.recheckReason && <p>原因: {latestTest.recheckReason}</p>}
+                      </div>
+                    </div>
+                  )}
                   {latestTest.remark && (
                     <div style={{ marginTop: 16, padding: 12, background: '#fffbe6', borderRadius: 4 }}>
                       <strong>备注：</strong>{latestTest.remark}
+                    </div>
+                  )}
+                  {latestTest.disposalRemark && (
+                    <div style={{ marginTop: 16, padding: 12, background: '#e6f7ff', borderRadius: 4 }}>
+                      <strong>处置备注：</strong>{latestTest.disposalRemark}
                     </div>
                   )}
                 </>
               )
             })()}
           </div>
+        )}
+      </Modal>
+
+      <Modal
+        title="申请复检"
+        open={isRequestRecheckVisible}
+        onOk={handleConfirmRequestRecheck}
+        onCancel={() => {
+          setIsRequestRecheckVisible(false)
+          setCurrentTest(null)
+          setRequestRecheckReason('')
+        }}
+        okText="确认申请复检"
+        cancelText="取消"
+        width={520}
+      >
+        {currentTest && (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              message={`批次 ${currentTest.batchNo} - ${STAGE_NAMES[currentTest.stage as Stage]} 初检不合格，申请复检后将保留原检测记录`}
+              style={{ marginBottom: 16 }}
+            />
+            <div style={{ marginBottom: 12 }}>
+              <strong>申请原因 <span style={{ color: 'red' }}>*</span></strong>
+            </div>
+            <Input.TextArea
+              rows={3}
+              value={requestRecheckReason}
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setRequestRecheckReason(e.target.value)}
+              placeholder="请填写复检申请原因，例如：检测设备异常、样品疑似污染等"
+            />
+          </>
+        )}
+      </Modal>
+
+      <Modal
+        title="最终处置"
+        open={isDisposeVisible}
+        onOk={handleConfirmDispose}
+        onCancel={() => {
+          setIsDisposeVisible(false)
+          setDisposeTest(null)
+          setDisposalRemark('')
+        }}
+        okText="确认处置"
+        okType="primary"
+        cancelText="取消"
+        width={520}
+      >
+        {disposeTest && (
+          <>
+            <Alert
+              type="warning"
+              showIcon
+              message={`批次 ${disposeTest.batchNo} - ${STAGE_NAMES[disposeTest.stage as Stage]}，请选择最终处置方式`}
+              style={{ marginBottom: 16 }}
+            />
+            <div style={{ marginBottom: 12 }}>
+              <strong>处置方式 <span style={{ color: 'red' }}>*</span></strong>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <Space>
+                <Button
+                  type={disposalType === 'release' ? 'primary' : 'default'}
+                  onClick={() => setDisposalType('release')}
+                >
+                  放行（合格进入下一工序）
+                </Button>
+                <Button
+                  type={disposalType === 'degrade' ? 'primary' : 'default'}
+                  danger={disposalType === 'degrade'}
+                  onClick={() => setDisposalType('degrade')}
+                >
+                  降级（降等级使用）
+                </Button>
+                <Button
+                  type={disposalType === 'discard' ? 'primary' : 'default'}
+                  danger={disposalType === 'discard'}
+                  onClick={() => setDisposalType('discard')}
+                >
+                  报废（直接销毁）
+                </Button>
+                <Button
+                  type={disposalType === 'rework' ? 'primary' : 'default'}
+                  onClick={() => setDisposalType('rework')}
+                >
+                  返工（重新处理）
+                </Button>
+              </Space>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <strong>处置备注</strong>
+            </div>
+            <Input.TextArea
+              rows={2}
+              value={disposalRemark}
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDisposalRemark(e.target.value)}
+              placeholder="请填写处置备注（可选）"
+            />
+          </>
         )}
       </Modal>
     </div>

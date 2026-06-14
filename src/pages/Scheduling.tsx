@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Card,
   Table,
@@ -20,6 +20,7 @@ import {
   Tooltip,
   Alert,
   List,
+  Empty,
 } from 'antd'
 import {
   PlusOutlined,
@@ -32,6 +33,10 @@ import {
   CalendarOutlined,
   UnorderedListOutlined,
   WarningOutlined,
+  PlayCircleOutlined,
+  StopOutlined,
+  ExclamationCircleOutlined,
+  DashboardOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from '../store/useAppStore'
 import type { Schedule } from '../types'
@@ -41,7 +46,7 @@ const { RangePicker } = DatePicker
 const { TextArea } = Input
 const { Option } = Select
 
-type ViewMode = 'list' | 'calendar'
+type ViewMode = 'list' | 'calendar' | 'execution'
 
 const Scheduling: React.FC = () => {
   const schedules = useAppStore((state) => state.schedules)
@@ -55,10 +60,20 @@ const Scheduling: React.FC = () => {
   const checkScheduleConflict = useAppStore((state) => state.checkScheduleConflict)
   const syncScheduleToDevice = useAppStore((state) => state.syncScheduleToDevice)
   const releaseDeviceFromSchedule = useAppStore((state) => state.releaseDeviceFromSchedule)
+  const initSyncSchedulesToDevice = useAppStore((state) => state.initSyncSchedulesToDevice)
+  const startSchedule = useAppStore((state) => state.startSchedule)
+  const completeSchedule = useAppStore((state) => state.completeSchedule)
+  const cancelSchedule = useAppStore((state) => state.cancelSchedule)
   const currentUser = useAppStore((state) => state.currentUser)
+
+  useEffect(() => {
+    initSyncSchedulesToDevice()
+  }, [])
 
   const [isModalVisible, setIsModalVisible] = useState(false)
   const [isDetailVisible, setIsDetailVisible] = useState(false)
+  const [isCancelVisible, setIsCancelVisible] = useState(false)
+  const [cancelReason, setCancelReason] = useState('')
   const [currentSchedule, setCurrentSchedule] = useState<Schedule | null>(null)
   const [modalType, setModalType] = useState<'create' | 'adjust' | 'approve'>('create')
   const [form] = Form.useForm()
@@ -73,6 +88,7 @@ const Scheduling: React.FC = () => {
       adjusting: '调整中',
       executing: '执行中',
       completed: '已完成',
+      cancelled: '已取消',
     }
     return textMap[status] || status
   }
@@ -85,6 +101,7 @@ const Scheduling: React.FC = () => {
       adjusting: 'orange',
       executing: 'blue',
       completed: 'default',
+      cancelled: 'default',
     }
     return colorMap[status] || 'default'
   }
@@ -170,6 +187,53 @@ const Scheduling: React.FC = () => {
         message.success('调整申请已拒绝，原排程已完全恢复')
       },
     })
+  }
+
+  const handleStartSchedule = (schedule: Schedule) => {
+    Modal.confirm({
+      title: '开始执行排程',
+      content: `确定开始执行批次 ${schedule.batchNo} 的排程吗？执行后设备状态将同步为运行中。`,
+      okText: '开始执行',
+      okType: 'primary',
+      cancelText: '取消',
+      onOk: () => {
+        startSchedule(schedule.id, currentUser.name)
+        message.success('排程已开始执行，设备已同步占用')
+      },
+    })
+  }
+
+  const handleCompleteSchedule = (schedule: Schedule) => {
+    Modal.confirm({
+      title: '完成排程',
+      content: `确定批次 ${schedule.batchNo} 排程已完成吗？完成后发酵罐将进入清洗状态，蒸馏设备将恢复空闲。`,
+      okText: '确认完成',
+      okType: 'primary',
+      cancelText: '取消',
+      onOk: () => {
+        completeSchedule(schedule.id, currentUser.name)
+        message.success('排程已完成，设备已释放')
+      },
+    })
+  }
+
+  const handleOpenCancel = (schedule: Schedule) => {
+    setCurrentSchedule(schedule)
+    setCancelReason('')
+    setIsCancelVisible(true)
+  }
+
+  const handleConfirmCancel = () => {
+    if (!cancelReason.trim()) {
+      message.warning('请填写取消原因')
+      return
+    }
+    if (currentSchedule) {
+      cancelSchedule(currentSchedule.id, currentUser.name, cancelReason)
+      message.success('排程已取消，设备已释放')
+    }
+    setIsCancelVisible(false)
+    setCancelReason('')
   }
 
   const handleCreate = () => {
@@ -388,10 +452,10 @@ const Scheduling: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 260,
+      width: 360,
       fixed: 'right' as const,
       render: (_: any, record: Schedule) => (
-        <Space size="small">
+        <Space size="small" wrap>
           <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => handleViewDetail(record)}>
             详情
           </Button>
@@ -420,6 +484,21 @@ const Scheduling: React.FC = () => {
               申请调整
             </Button>
           )}
+          {record.status === 'approved' && (
+            <Button type="link" size="small" icon={<PlayCircleOutlined />} onClick={() => handleStartSchedule(record)}>
+              开始执行
+            </Button>
+          )}
+          {(record.status === 'approved' || record.status === 'executing') && (
+            <>
+              <Button type="link" size="small" icon={<StopOutlined />} onClick={() => handleCompleteSchedule(record)}>
+                完成
+              </Button>
+              <Button type="link" size="small" danger icon={<ExclamationCircleOutlined />} onClick={() => handleOpenCancel(record)}>
+                取消
+              </Button>
+            </>
+          )}
         </Space>
       ),
     },
@@ -435,7 +514,101 @@ const Scheduling: React.FC = () => {
 
   const getScheduleForSlot = (date: dayjs.Dayjs, shift: string) => {
     const dateStr = date.format('YYYY-MM-DD')
-    return schedules.filter((s) => s.date === dateStr && s.shift === shift && s.status !== 'completed' && s.status !== 'rejected')
+    return schedules.filter(
+      (s) =>
+        s.date === dateStr &&
+        s.shift === shift &&
+        s.status !== 'completed' &&
+        s.status !== 'rejected' &&
+        s.status !== 'cancelled',
+    )
+  }
+
+  const renderExecutionBoard = () => {
+    const statusGroups: Array<{
+      key: Schedule['status'] | string; title: string; color: string }> = [
+      { key: 'approved', title: '已批准（待开始）', color: '#52c41a' },
+      { key: 'executing', title: '执行中', color: '#1677ff' },
+      { key: 'completed', title: '已完成', color: '#8c8c8c' },
+      { key: 'cancelled', title: '已取消', color: '#bfbfbf' },
+    ]
+
+    const renderCard = (s: Schedule) => (
+      <Card
+        key={s.id}
+        size="small"
+        style={{
+          marginBottom: 8,
+          cursor: 'pointer',
+          borderLeft: `3px solid ${getStatusColor(s.status) === 'default' ? '#d9d9d9' : getStatusColor(s.status)}`,
+        }}
+        onClick={() => handleViewDetail(s)}
+      >
+        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{s.batchNo}</div>
+        <div style={{ fontSize: 12, color: '#595959', marginBottom: 4 }}>
+          {s.recipeName}
+        </div>
+        <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 4 }}>
+          {s.fermenterName}{s.distillerName ? ' · ' + s.distillerName : ''}
+        </div>
+        <div style={{ fontSize: 11, color: '#8c8c8c' }}>
+          {s.startTime.slice(5)} ~ {s.endTime.slice(5)} · {getShiftShort(s.shift)}班
+        </div>
+        <div style={{ marginTop: 6 }}>
+          <Tag color={getStatusColor(s.status)} style={{ margin: 0 }}>
+            {getStatusText(s.status)}
+          </Tag>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          {s.status === 'approved' && (
+            <Space size="small">
+              <Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={(e) => { e.stopPropagation(); handleStartSchedule(s) }}>
+                开始执行
+              </Button>
+              <Button size="small" danger icon={<ExclamationCircleOutlined />} onClick={(e) => { e.stopPropagation(); handleOpenCancel(s) }}>
+                取消
+              </Button>
+            </Space>
+          )}
+          {s.status === 'executing' && (
+            <Space size="small">
+              <Button type="primary" size="small" icon={<StopOutlined />} onClick={(e) => { e.stopPropagation(); handleCompleteSchedule(s) }}>
+                完成
+              </Button>
+              <Button size="small" danger icon={<ExclamationCircleOutlined />} onClick={(e) => { e.stopPropagation(); handleOpenCancel(s) }}>
+                取消
+              </Button>
+            </Space>
+          )}
+        </div>
+      </Card>
+    )
+
+    return (
+      <div>
+      <Row gutter={[16, 16]}>
+        {statusGroups.map((group) => {
+          const list = schedules.filter((s) => s.status === group.key)
+          return (
+            <Col span={6} key={group.key}>
+              <Card
+                title={<span style={{ color: group.color, fontWeight: 500 }}>{group.title} ({list.length})</span>}
+                size="small"
+                style={{ height: '100%' }}
+                bodyStyle={{ padding: 12, maxHeight: 520, overflowY: 'auto' }}
+              >
+                {list.length === 0 ? (
+                  <Empty description="暂无" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ) : (
+                  list.map(renderCard)
+                )}
+              </Card>
+            </Col>
+          )
+        })}
+      </Row>
+      </div>
+    )
   }
 
   const renderCalendarView = () => (
@@ -714,6 +887,14 @@ const Scheduling: React.FC = () => {
               </span>
             ),
           },
+          {
+            key: 'execution',
+            tab: (
+              <span>
+                <DashboardOutlined /> 执行看板
+              </span>
+            ),
+          },
         ]}
         activeTabKey={viewMode}
         onTabChange={(k) => setViewMode(k as ViewMode)}
@@ -730,8 +911,10 @@ const Scheduling: React.FC = () => {
       >
         {viewMode === 'list' ? (
           <Table columns={columns} dataSource={schedules} rowKey="id" pagination={{ pageSize: 8 }} scroll={{ x: 1200 }} />
-        ) : (
+        ) : viewMode === 'calendar' ? (
           renderCalendarView()
+        ) : (
+          renderExecutionBoard()
         )}
       </Card>
 
@@ -849,6 +1032,15 @@ const Scheduling: React.FC = () => {
                       <p><strong>申请人：</strong>{latestSchedule.operator || '-'}</p>
                       <p><strong>审批人：</strong>{latestSchedule.approver || '-'}</p>
                       {latestSchedule.approveTime && <p><strong>审批时间：</strong>{latestSchedule.approveTime}</p>}
+                      {latestSchedule.executeTime && <p><strong>开始执行：</strong>{latestSchedule.executeTime}</p>}
+                      {latestSchedule.completeTime && <p><strong>完成时间：</strong>{latestSchedule.completeTime}</p>}
+                      {latestSchedule.cancelTime && <p><strong>取消时间：</strong>{latestSchedule.cancelTime}</p>}
+                      {latestSchedule.cancelReason && (
+                        <p>
+                          <strong>取消原因：</strong>
+                          <Tag color="red">{latestSchedule.cancelReason}</Tag>
+                        </p>
+                      )}
                     </Col>
                   </Row>
                   {latestSchedule.originalSchedule && (
@@ -918,12 +1110,57 @@ const Scheduling: React.FC = () => {
                         ...(latestSchedule.status === 'approved' || latestSchedule.status === 'executing'
                           ? [
                               {
-                                color: '#52c41a',
+                                color: latestSchedule.status === 'executing' ? '#1677ff' : '#52c41a',
+                                children: (
+                                  <div>
+                                    <p>排程已批准{latestSchedule.executeTime ? '（已开始执行）' : '（待开始执行）'}</p>
+                                    <p style={{ fontSize: 12, color: '#8c8c8c' }}>
+                                      {latestSchedule.approver} · {latestSchedule.approveTime}
+                                    </p>
+                                  </div>
+                                ),
+                              },
+                            ]
+                          : []),
+                        ...(latestSchedule.status === 'executing'
+                          ? [
+                              {
+                                color: 'blue',
                                 children: (
                                   <div>
                                     <p>执行中</p>
                                     <p style={{ fontSize: 12, color: '#8c8c8c' }}>
-                                      已推送至工段终端 · 发酵罐/蒸馏设备已占用
+                                      开始时间: {latestSchedule.executeTime} · 发酵罐/蒸馏设备运行中
+                                    </p>
+                                  </div>
+                                ),
+                              },
+                            ]
+                          : []),
+                        ...(latestSchedule.status === 'completed'
+                          ? [
+                              {
+                                color: 'green',
+                                children: (
+                                  <div>
+                                    <p>排程已完成</p>
+                                    <p style={{ fontSize: 12, color: '#8c8c8c' }}>
+                                      完成时间: {latestSchedule.completeTime} · 发酵罐已进入清洗
+                                    </p>
+                                  </div>
+                                ),
+                              },
+                            ]
+                          : []),
+                        ...(latestSchedule.status === 'cancelled'
+                          ? [
+                              {
+                                color: 'red',
+                                children: (
+                                  <div>
+                                    <p>排程已取消</p>
+                                    <p style={{ fontSize: 12, color: '#8c8c8c' }}>
+                                      取消时间: {latestSchedule.cancelTime} · 原因: {latestSchedule.cancelReason}
                                     </p>
                                   </div>
                                 ),
@@ -938,6 +1175,38 @@ const Scheduling: React.FC = () => {
             })()}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        title="取消排程"
+        open={isCancelVisible}
+        onOk={handleConfirmCancel}
+        onCancel={() => setIsCancelVisible(false)}
+        okText="确认取消排程"
+        okType="danger"
+        cancelText="返回"
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="排程取消后相关设备将恢复为空闲状态，请谨慎操作"
+          />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <strong>待取消排程：</strong>{currentSchedule?.batchNo} - {currentSchedule?.recipeName}
+        </div>
+        <div>
+          <label style={{ display: 'block', marginBottom: 6 }}>
+            取消原因 <span style={{ color: 'red' }}>*</span>
+          </label>
+          <TextArea
+            rows={3}
+            value={cancelReason}
+            onChange={(e) => setCancelReason(e.target.value)}
+            placeholder="请填写取消原因，例如：原料不足、设备故障等"
+          />
+        </div>
       </Modal>
     </div>
   )
